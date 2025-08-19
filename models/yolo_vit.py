@@ -24,23 +24,45 @@ class PatchViTEncoder(nn.Module):
         patch_tokens = patch_tokens.view(-1, H_p, W_p, patch_tokens.shape[-1]).permute(0, 3, 1, 2)
         return patch_tokens
 
-class CNNHeatmapDecoder(nn.Module):
-    def __init__(self, token_dim, num_keypoints=4, input_grid=8, output_shape=128):
+class SingleHeatmapDecoder(nn.Module):
+    def __init__(self, token_dim, input_grid=8, output_shape=128):
         super().__init__()
-        # Upsample from patch grid to output_shape
-        self.decoder = nn.Sequential(
-            nn.Conv2d(token_dim, 128, 3, padding=1),
+        self.up1 = nn.Sequential(
+            nn.Conv2d(token_dim, 256, 3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.up2 = nn.Sequential(
             nn.Conv2d(128, 64, 3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=output_shape//(input_grid*2), mode='bilinear', align_corners=False),
-            nn.Conv2d(64, num_keypoints, 1)
+            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
+            nn.ReLU(inplace=True),
         )
+        self.up3 = nn.Sequential(
+            nn.Conv2d(32, 32, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(32, 16, 4, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.up4 = nn.Sequential(
+            nn.Conv2d(16, 16, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(16, 16, 4, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.final = nn.Conv2d(16, 1, 1)
+        self.output_shape = output_shape
 
     def forward(self, x):
-        # x: (B, D, H_p, W_p)
-        return self.decoder(x)
+        x = self.up1(x)
+        x = self.up2(x)
+        x = self.up3(x)
+        x = self.up4(x)
+        x = F.interpolate(x, (self.output_shape, self.output_shape))
+        x = self.final(x)
+        return x # (B, 1, H, W)
+
 
 class HybridKeypointNet(nn.Module):
     def __init__(self, backbone, in_channels_list, num_keypoints=4, vit_img_size=128, vit_patch_size=16, output_shape=128):
@@ -50,15 +72,17 @@ class HybridKeypointNet(nn.Module):
         self.encoder = PatchViTEncoder(in_channels_list, 128, img_size=vit_img_size, patch_size=vit_patch_size)
         self.input_grid = vit_img_size // vit_patch_size
         token_dim = 768  # For ViT-B
-        self.decoder = CNNHeatmapDecoder(token_dim, num_keypoints, self.input_grid, output_shape)
+        self.decoder = SingleHeatmapDecoder(token_dim, self.input_grid, output_shape)
         self.output_shape = output_shape
 
     def forward(self, x):
-        features = self.backbone(x)
-        fused_features = self.fusion(features)
+        features = self.backbone(x)  # list of features
+        fused_features = self.fusion(features)  # for ViT
         encoded = self.encoder(fused_features)
-        heatmaps = self.decoder(encoded)
-        return heatmaps
+        heatmap = self.decoder(encoded)  # (B, 1, H, W)
+        softmaxed_heatmap = spatial_softmax(heatmap)
+        return softmaxed_heatmap
+
 
 
 # Example usage (commented out)

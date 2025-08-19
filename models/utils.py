@@ -60,3 +60,14 @@ def soft_argmax(heatmap, beta=100):
     y = (y_soft * y_coords).sum(dim=1)
     coords = torch.stack((x, y), dim=1)  # (B*K, 2)
     return coords.view(*rest, 2)
+
+def spatial_softmax(heatmap):
+    """
+    Applies softmax over the spatial dimension of a 4D tensor (B, 1, H, W).
+    Returns same shape, values sum to 1 per image.
+    """
+    B, C, H, W = heatmap.shape
+    heatmap_flat = heatmap.view(B, -1)
+    softmax_flat = F.softmax(heatmap_flat, dim=1)
+    return softmax_flat.view(B, 1, H, W)
+

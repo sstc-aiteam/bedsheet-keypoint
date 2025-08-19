@@ -6,14 +6,6 @@
 
 ## 訓練模型
 
-執行 notebook: keypoint_detection_model_training.ipynb
+預訓練執行 notebook: keypoint_detection_model_training.ipynb
 
-## 產生切割圖片
-
-預先在系統上安裝 facebook-research:sam2
-
-執行 notebook: yolo_sam2_segmentation.ipynb
-
-## 關鍵點偵測
-
-執行 bedsheet_keypoint_detection.ipynb
+被單 depth image 模型訓練 執行: depth_keypoint_detection_model_training.ipynb

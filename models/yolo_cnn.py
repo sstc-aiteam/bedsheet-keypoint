@@ -93,10 +93,8 @@ class EnhancedYoloKeypointNet(nn.Module):
 #     # Load YOLOv8l and slice the first 10 layers
 #     yolo11 = YOLO('yolo11l-seg.pt')  # Or yolo11m-seg.pt, yolo11x-seg.pt, etc.
 #     backbone_seq = yolo11.model.model[:12]
-#     # yolo_model = YOLO('yolov8l.pt')
-#     # backbone_seq = yolo_model.model.model[:10]
 #     # Initialize the backbone with selected indices for multi-scale features
-#     backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3])
+#     backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
 #     input_dummy = torch.randn(1, 3, 128, 128)
 #     with torch.no_grad():
 #         feats = backbone(input_dummy)
