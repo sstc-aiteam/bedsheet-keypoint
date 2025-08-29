@@ -4,6 +4,7 @@ import cv2
 import tkinter as tk
 from PIL import Image, ImageTk
 import time
+import os
 
 # save path
 save_image_dir = "test_bin/"
@@ -75,6 +76,7 @@ class RGBDepthApp:
     def save_images(self):
         if self.color is not None and self.depth is not None and self.depth_color is not None:
             ts = int(time.time())
+            os.makedirs(save_image_dir, exist_ok=True)
             cv2.imwrite(f"{save_image_dir}color_{ts}.png", self.color)
             cv2.imwrite(f"{save_image_dir}depth_color_{ts}.png", self.depth_color)
             # Save the raw depth as .npy to preserve all values

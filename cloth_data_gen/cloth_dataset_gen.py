@@ -28,17 +28,27 @@ def create_cloth(length, width):
     return cloth
 
 def assign_random_color(obj):
-    # Create and assign a dark colored material
+    # Create and assign a material with either light or dark color
     mat = bpy.data.materials.new("ClothColorMat")
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes["Principled BSDF"]
-    # Sample dark RGB values only (values closer to 0 are darker)
-    color = (
-        random.uniform(0.0, 0.4),
-        random.uniform(0.0, 0.4),
-        random.uniform(0.0, 0.4),
-        1
-    )
+    # 隨機選擇亮色或暗色
+    if random.random() < 0.5:
+        # 暗色
+        color = (
+            random.uniform(0.0, 0.4),
+            random.uniform(0.0, 0.4),
+            random.uniform(0.0, 0.4),
+            1
+        )
+    else:
+        # 亮色
+        color = (
+            random.uniform(0.7, 1.0),
+            random.uniform(0.7, 1.0),
+            random.uniform(0.7, 1.0),
+            1
+        )
     bsdf.inputs["Base Color"].default_value = color
     obj.data.materials.clear()
     obj.data.materials.append(mat)
