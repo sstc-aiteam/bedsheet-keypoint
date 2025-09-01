@@ -259,7 +259,7 @@ bed-images/
 cloth_data_gen/output/
 realsense/realsense_data/
 realsense/realsense_data2/
-RGB-images-jpg/
+image_data/
 architecture_full.png
 
 # Documentation files (keep only README.md)

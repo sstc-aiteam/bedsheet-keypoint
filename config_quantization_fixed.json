@@ -1,8 +1,8 @@
 {
     "seed": 42,
     "yolo_model_path": "models/yolo_finetuned/best.pt",
-    "keypoints_data_src": "via_proj/via_project_22Aug2025_16h07m06s.json",
-    "image_path": "RGB-images-jpg/",
+    "keypoints_data_srcs": ["via_proj/via_project_22Aug2025_16h07m06s.json", "via_proj/via_project_01Sep2025_09h52m16s.json"],
+    "image_paths": ["image_data/RGB-images/", "image_data/RGB-images2/"],
     "allowed_classes": [1],
     "batch_size": 32,
     "learning_rate": 3e-5,
@@ -30,7 +30,7 @@
     "gradient_clip_val": 1.0,
     "gradient_accumulation_steps": 2,
     "early_stopping_patience": 20,
-    "use_stronger_augmentation": true,
+    "use_stronger_augmentation": false,
     "dropout_rate": 0.1,
     "label_smoothing": 0.1
 }

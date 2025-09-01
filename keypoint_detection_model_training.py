@@ -90,6 +90,46 @@ def kl_heatmap_loss(pred_hm, gt_hm, mask=None, reduction='mean'):
     else:
         return kl_div
 
+def combine_nearby_peaks(heatmap, threshold=0.003, min_distance=5):
+    """
+    Find peaks in heatmap above threshold and combine nearby peaks into single keypoints.
+    
+    Args:
+        heatmap: 2D numpy array of heatmap values
+        threshold: Minimum value to consider as a peak
+        min_distance: Minimum distance between peaks to keep them separate
+    
+    Returns:
+        List of (row, col) tuples representing combined peak locations
+    """
+    # Find all locations above threshold
+    above_threshold = np.where(heatmap > threshold)
+    
+    if len(above_threshold[0]) == 0:
+        return []
+    
+    # Get coordinates and values
+    coords = list(zip(above_threshold[0], above_threshold[1]))
+    values = [heatmap[y, x] for y, x in coords]
+    
+    # Sort by value (highest first)
+    sorted_indices = np.argsort(values)[::-1]
+    sorted_coords = [coords[i] for i in sorted_indices]
+    
+    # Combine nearby peaks
+    combined_peaks = []
+    for coord in sorted_coords:
+        # Check if this peak is far enough from existing combined peaks
+        if not combined_peaks:
+            combined_peaks.append(coord)
+        else:
+            # Calculate distances to existing peaks
+            distances = cdist([coord], combined_peaks, metric='euclidean')[0]
+            if np.min(distances) >= min_distance:
+                combined_peaks.append(coord)
+    
+    return combined_peaks
+
 class RandomRotateFlip:
     """
     Randomly applies:
@@ -209,7 +249,26 @@ def create_model():
     
     return model
 
-def train_model(model, trainloader, testloader, num_epochs=300, load_model=False):
+# --- Safe save/load helpers for torch.compile-wrapped models ---
+def _get_base_module(module):
+    return getattr(module, "_orig_mod", module)
+
+def save_model_safely(model, save_path: str) -> None:
+    base = _get_base_module(model)
+    torch.save(base.state_dict(), save_path)
+
+def load_model_safely(model, load_path: str, map_location="cpu", strict: bool = False):
+    state = torch.load(load_path, map_location=map_location)
+    cleaned = {}
+    for key, value in state.items():
+        if key.startswith("_orig_mod."):
+            cleaned[key[len("_orig_mod."):]] = value
+        else:
+            cleaned[key] = value
+    target = _get_base_module(model)
+    return target.load_state_dict(cleaned, strict=strict)
+
+def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_model=False, early_stopping_patience: int = 20):
     """Train the model"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
@@ -225,13 +284,16 @@ def train_model(model, trainloader, testloader, num_epochs=300, load_model=False
     
     if not load_model:
         optimizer = optim.AdamW(compiled_model.parameters(), lr=1e-5)
+        best_val_loss = float('inf')
+        patience_counter = 0
 
         for epoch in range(num_epochs):
             time_start = time.time()
             compiled_model.train()
             running_loss = 0.0
 
-            for batch in trainloader:
+            total_train_batches = len(trainloader)
+            for batch_idx, batch in enumerate(trainloader):
                 images = batch["image"].to(device)
                 keypoints = batch["keypoints"].to(device)
                 optimizer.zero_grad()
@@ -242,7 +304,7 @@ def train_model(model, trainloader, testloader, num_epochs=300, load_model=False
                     
                     # active learning: Uncertainty Sampling using entropy as the uncertainty metric
                     entropies = batch_entropy(outputs)
-                    k = images.size(0) // 2
+                    k = max(1, images.size(0) // 2)
                     topk_vals, topk_idx = torch.topk(entropies, k, largest=True)  # highest entropy first
                     selected_outputs = outputs[topk_idx]
                     selected_keypoints_blur = keypoints_blur[topk_idx]
@@ -254,13 +316,46 @@ def train_model(model, trainloader, testloader, num_epochs=300, load_model=False
                 scaler.step(optimizer)
                 scaler.update()
                 running_loss += loss.item() * images.size(0)
-            
-            print(f'Epoch {epoch+1}: Loss {running_loss / len(trainloader.dataset):.4f} time seconds: {time.time() - time_start}')
+                # Progress output
+                print(f"Epoch {epoch+1}/{num_epochs} [Train {batch_idx+1}/{total_train_batches}] loss: {loss.item():.4f}", end='\r')
+            print()
 
-        # save the model
-        torch.save(compiled_model.state_dict(), 'models/keypoint_model_vit.pth')
+            train_epoch_loss = running_loss / len(trainloader.dataset)
+
+            # Validation
+            compiled_model.eval()
+            val_running_loss = 0.0
+            total_val_batches = len(valloader)
+            with torch.no_grad():
+                for batch_idx, batch in enumerate(valloader):
+                    images = batch["image"].to(device)
+                    keypoints = batch["keypoints"].to(device)
+                    with autocast("cuda", dtype=torch.float16):
+                        outputs = compiled_model(images)
+                        keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
+                        vloss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                    val_running_loss += vloss.item() * images.size(0)
+                    print(f"Epoch {epoch+1}/{num_epochs} [Val {batch_idx+1}/{total_val_batches}] loss: {vloss.item():.4f}", end='\r')
+            print()
+
+            val_epoch_loss = val_running_loss / len(valloader.dataset)
+            print(f'Epoch {epoch+1}: Train Loss {train_epoch_loss:.4f}, Val Loss {val_epoch_loss:.4f}, Time: {time.time() - time_start:.2f}s')
+
+            # Early stopping
+            if val_epoch_loss < best_val_loss:
+                best_val_loss = val_epoch_loss
+                patience_counter = 0
+                save_model_safely(compiled_model, 'models/keypoint_model_vit.pth')
+                print(f"New best model saved with validation loss: {best_val_loss:.4f}")
+            else:
+                patience_counter += 1
+                print(f"Validation loss didn't improve. Patience: {patience_counter}/{early_stopping_patience}")
+                if patience_counter >= early_stopping_patience:
+                    print(f"Early stopping triggered after {epoch+1} epochs")
+                    break
     else:
-        compiled_model.load_state_dict(torch.load('models/keypoint_model_vit.pth', map_location=device))
+        # load safely into compiled model
+        load_model_safely(compiled_model, 'models/keypoint_model_vit.pth', map_location=device, strict=False)
         compiled_model.eval()
     
     return compiled_model
@@ -333,19 +428,24 @@ def main():
     # Create the full dataset without transform
     full_dataset = KeypointDataset(img_arr, keypoints_img_arr, transform=None)
     
-    # Split indices for train/test
-    train_size = int(0.8 * len(full_dataset))
-    test_size = len(full_dataset) - train_size
-    train_indices, test_indices = torch.utils.data.random_split(range(len(full_dataset)), [train_size, test_size])
+    # Split into train/val/test (70/10/20)
+    total_len = len(full_dataset)
+    train_size = int(0.7 * total_len)
+    val_size = int(0.1 * total_len)
+    test_size = total_len - train_size - val_size
+    train_indices, val_indices, test_indices = torch.utils.data.random_split(range(total_len), [train_size, val_size, test_size])
     
-    # Create train and test datasets with/without transform
+    # Create datasets with transforms
     train_dataset = torch.utils.data.Subset(KeypointDataset(img_arr, keypoints_img_arr, transform=rotate_transform), train_indices)
+    val_dataset = torch.utils.data.Subset(KeypointDataset(img_arr, keypoints_img_arr, transform=None), val_indices)
     test_dataset = torch.utils.data.Subset(KeypointDataset(img_arr, keypoints_img_arr, transform=None), test_indices)
     
     trainloader = DataLoader(train_dataset, batch_size=8, shuffle=True, pin_memory=True)
+    valloader = DataLoader(val_dataset, batch_size=8, shuffle=False, pin_memory=True)
     testloader = DataLoader(test_dataset, batch_size=8, shuffle=False, pin_memory=True)
     
     print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Validation dataset size: {len(val_dataset)}")
     print(f"Test dataset size: {len(test_dataset)}")
     
     # Test keypoint visualization
@@ -360,7 +460,7 @@ def main():
     # Train model
     print("Starting training...")
     load_model = False  # Set to True to load existing model
-    trained_model = train_model(model, trainloader, testloader, num_epochs=300, load_model=load_model)
+    trained_model = train_model(model, trainloader, valloader, testloader, num_epochs=300, load_model=load_model, early_stopping_patience=20)
     
     # Evaluate model
     print("Evaluating model...")

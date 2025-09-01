@@ -42,6 +42,18 @@ from src.models.efficient_keypoint_net import EfficientViTKeypointNet
 from src.utils import kl_heatmap_loss
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
+# TensorRT utilities
+try:
+    from src.utils.tensorrt_utils import (
+        convert_keypoint_model_to_tensorrt,
+        benchmark_tensorrt_vs_pytorch,
+        TensorRTInference
+    )
+    TENSORRT_AVAILABLE = True
+except ImportError as e:
+    print(f"TensorRT utilities not available: {e}")
+    TENSORRT_AVAILABLE = False
+
 # Default configuration
 DEFAULT_CONFIG = {
     "seed": 42,
@@ -70,7 +82,11 @@ DEFAULT_CONFIG = {
     "early_stopping_patience": 20,
     "use_stronger_augmentation": False,
     "dropout_rate": 0.1,
-    "label_smoothing": 0.1
+    "label_smoothing": 0.1,
+    "enable_tensorrt_conversion": True,
+    "tensorrt_precision": "fp16",
+    "tensorrt_workspace_size": 1 << 30,
+    "tensorrt_benchmark": True
 }
 
 # Set random seeds for reproducibility
@@ -396,6 +412,45 @@ def create_model():
     
     return model
 
+# --- Safe save/load helpers for torch.compile-wrapped models ---
+def _get_base_module(module):
+    return getattr(module, "_orig_mod", module)
+
+def save_model_safely(model, save_path: str) -> None:
+    base = _get_base_module(model)
+    torch.save(base.state_dict(), save_path)
+
+def load_model_safely(model, load_path: str, map_location="cpu", strict: bool = False):
+    state = torch.load(load_path, map_location=map_location)
+    cleaned = {}
+    for key, value in state.items():
+        if key.startswith("_orig_mod."):
+            cleaned[key[len("_orig_mod."):]] = value
+        else:
+            cleaned[key] = value
+    target = _get_base_module(model)
+    return target.load_state_dict(cleaned, strict=strict)
+# Utilities to safely save/load models when using torch.compile
+def get_original_module(module):
+    """Return the underlying uncompiled nn.Module if module was wrapped by torch.compile."""
+    return getattr(module, "_orig_mod", module)
+
+def get_state_dict_safely(module):
+    """Get a clean state_dict without _orig_mod prefixes when module is compiled."""
+    base_module = get_original_module(module)
+    return base_module.state_dict()
+
+def load_state_dict_safely(model, saved_state_dict):
+    """Load a saved state_dict into an uncompiled model, stripping _orig_mod prefixes if present."""
+    cleaned_state_dict = {}
+    for key, value in saved_state_dict.items():
+        if key.startswith("_orig_mod."):
+            cleaned_state_dict[key[len("_orig_mod."):]] = value
+        else:
+            cleaned_state_dict[key] = value
+    missing_keys, unexpected_keys = model.load_state_dict(cleaned_state_dict, strict=False)
+    return missing_keys, unexpected_keys
+
 def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_model=False, save_path=None, use_mixup=True, mixup_alpha=0.2, early_stopping_patience=20):
     """Train the model using the working logic from keypoint_detection_model_training.py"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -425,7 +480,8 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
             compiled_model.train()
             running_loss = 0.0
 
-            for batch in trainloader:
+            total_train_batches = len(trainloader)
+            for batch_idx, batch in enumerate(trainloader):
                 images = batch["image"].to(device)
                 keypoints = batch["keypoints"].to(device)
                 optimizer.zero_grad()
@@ -445,6 +501,9 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
                 scaler.step(optimizer)
                 scaler.update()
                 running_loss += loss.item() * images.size(0)
+                # Progress output
+                print(f"Epoch {epoch+1}/{num_epochs} [Train {batch_idx+1}/{total_train_batches}] loss: {loss.item():.4f}", end='\r')
+            print()  # newline after epoch train loop
             
             train_loss = running_loss / len(trainloader.dataset)
             
@@ -453,7 +512,8 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
             val_loss = 0.0
             
             with torch.no_grad():
-                for batch in valloader:
+                total_val_batches = len(valloader)
+                for batch_idx, batch in enumerate(valloader):
                     images = batch["image"].to(device)
                     keypoints = batch["keypoints"].to(device)
                     
@@ -463,6 +523,9 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
                         loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
                     
                     val_loss += loss.item() * images.size(0)
+                    # Progress output
+                    print(f"Epoch {epoch+1}/{num_epochs} [Val {batch_idx+1}/{total_val_batches}] loss: {loss.item():.4f}", end='\r')
+                print()  # newline after epoch val loop
             
             val_loss = val_loss / len(valloader.dataset)
             
@@ -479,7 +542,8 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
                 # Save best model
                 if save_path is None:
                     save_path = 'models/keypoint_model_vit_post.pth'
-                torch.save(compiled_model.state_dict(), save_path)
+                # Save safely (supports compiled models, strips _orig_mod)
+                save_model_safely(compiled_model, save_path)
                 print(f"New best model saved with validation loss: {val_loss:.4f}")
             else:
                 patience_counter += 1
@@ -501,10 +565,75 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
     else:
         # Load from the specified path or default
         load_path = save_path if save_path else 'models/keypoint_model_vit_post.pth'
-        compiled_model.load_state_dict(torch.load(load_path, map_location=device))
+        # Load safely into the uncompiled model, then compile for use
+        load_model_safely(model, load_path, map_location=device, strict=False)
+        compiled_model = torch.compile(model)
         compiled_model.eval()
     
     return compiled_model, training_history if 'training_history' in locals() else None
+
+def convert_model_to_tensorrt(model_path: str, config: Dict[str, Any]) -> Optional[str]:
+    """
+    Convert trained model to TensorRT format.
+    
+    Args:
+        model_path: Path to trained PyTorch model
+        config: Configuration dictionary
+        
+    Returns:
+        Path to TensorRT model if successful, None otherwise
+    """
+    if not TENSORRT_AVAILABLE:
+        print("TensorRT utilities not available, skipping conversion")
+        return None
+    
+    if not config.get("enable_tensorrt_conversion", False):
+        print("TensorRT conversion disabled in config")
+        return None
+    
+    try:
+        print("Starting TensorRT conversion...")
+        
+        # Generate TensorRT model path
+        tensorrt_path = model_path.replace('.pth', '.trt')
+        
+        # Convert model
+        tensorrt_path = convert_keypoint_model_to_tensorrt(
+            model_path=model_path,
+            output_path=tensorrt_path,
+            input_shape=(1, 3, 128, 128),
+            precision=config.get("tensorrt_precision", "fp16"),
+            workspace_size=config.get("tensorrt_workspace_size", 1 << 30)
+        )
+        
+        print(f"TensorRT conversion completed: {tensorrt_path}")
+        
+        # Run benchmark if requested
+        if config.get("tensorrt_benchmark", False):
+            print("Running TensorRT vs PyTorch benchmark...")
+            benchmark_results = benchmark_tensorrt_vs_pytorch(
+                pytorch_model_path=model_path,
+                tensorrt_model_path=tensorrt_path,
+                num_runs=100
+            )
+            
+            print(f"Benchmark Results:")
+            print(f"  PyTorch avg time: {benchmark_results['pytorch']['avg_inference_time']:.2f} ms")
+            print(f"  TensorRT avg time: {benchmark_results['tensorrt']['avg_inference_time']:.2f} ms")
+            print(f"  Speedup: {benchmark_results['speedup']:.2f}x")
+            
+            # Save benchmark results
+            benchmark_file = tensorrt_path.replace('.trt', '_benchmark.json')
+            with open(benchmark_file, 'w') as f:
+                json.dump(benchmark_results, f, indent=2)
+            print(f"Benchmark results saved to: {benchmark_file}")
+        
+        return tensorrt_path
+        
+    except Exception as e:
+        print(f"TensorRT conversion failed: {e}")
+        return None
+
 
 def combine_nearby_peaks(peaks, distance_threshold=10):
     """
@@ -560,7 +689,7 @@ def combine_nearby_peaks(peaks, distance_threshold=10):
     
     return combined_peaks
 
-def evaluate_model(model, testloader):
+def evaluate_model(model, testloader, results_dir='results'):
     """Evaluate the model on test set"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.eval()
@@ -568,7 +697,7 @@ def evaluate_model(model, testloader):
     iter_count = 0
     
     # Create results directory if it doesn't exist
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
     
     with torch.no_grad():
         for batch in testloader:
@@ -598,31 +727,42 @@ def evaluate_model(model, testloader):
                 
                 # Combine nearby peaks into single keypoints
                 combined_peaks = combine_nearby_peaks(peaks, distance_threshold=10)
+                print(f"{os.path.basename(orig_path)} -> raw_peaks: {len(peaks)}, combined: {len(combined_peaks)}")
                 
                 # Scale keypoint coordinates from 128x128 to original image size
                 scale_x = orig_w / 128
                 scale_y = orig_h / 128
                 
                 # Draw keypoints on original image
-                for p in combined_peaks:
-                    i, j = p  # i=row, j=col in 128x128 space
-                    # Scale to original image coordinates
-                    orig_i = int(i * scale_y)
-                    orig_j = int(j * scale_x)
-                    # Draw circle (OpenCV uses BGR)
-                    cv2.circle(orig_img, (orig_j, orig_i), 30, (0, 0, 255), -1)
+                if combined_peaks:
+                    for p in combined_peaks:
+                        i, j = p  # i=row, j=col in 128x128 space
+                        # Scale to original image coordinates
+                        orig_i = int(i * scale_y)
+                        orig_j = int(j * scale_x)
+                        # Draw circle (OpenCV uses BGR)
+                        cv2.circle(orig_img, (orig_j, orig_i), 30, (0, 0, 255), -1)
+                else:
+                    # Fallback: draw global argmax to aid debugging
+                    max_idx = np.unravel_index(np.argmax(kp), kp.shape)
+                    mi, mj = int(max_idx[0]), int(max_idx[1])
+                    mv = float(kp[mi, mj])
+                    orig_i = int(mi * scale_y)
+                    orig_j = int(mj * scale_x)
+                    cv2.circle(orig_img, (orig_j, orig_i), 24, (0, 255, 0), 2)
+                    cv2.putText(orig_img, f"argmax {mv:.4f}", (max(5, orig_j-60), max(25, orig_i-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
                 
                 # Save result with original image name
                 filename = os.path.basename(orig_path)
                 name_without_ext = os.path.splitext(filename)[0]
-                result_path = f'results/{name_without_ext}_keypoints.png'
+                result_path = f'{results_dir}/{name_without_ext}_keypoints.png'
                 cv2.imwrite(result_path, orig_img)
                 iter_count += 1
                 
             test_loss += loss.item() * images.size(0)
     
     print(f'Test Loss: {test_loss / len(testloader.dataset):.4f}')
-    print(f'Keypoint visualizations saved to results/ directory')
+    print(f'Keypoint visualizations saved to {results_dir}/ directory')
     return test_loss / len(testloader.dataset)
 
 def plot_training_curves(history, save_path):
@@ -817,8 +957,38 @@ def main_training_pipeline(config: Dict[str, Any]) -> Tuple[Any, Dict[str, List[
     
     # Evaluate regular model
     print("Evaluating regular model...")
-    test_loss = evaluate_model(trained_model, test_loader)
+    test_loss = evaluate_model(trained_model, test_loader, 'results_trained_model')
     print(f"Regular model test loss: {test_loss:.4f}")
+    
+    # Now reload the model and evaluate again
+    print("\n" + "="*50)
+    print("TESTING RELOADED MODEL")
+    print("="*50)
+    
+    # Create a new model instance
+    print("Creating new model instance...")
+    reloaded_model = create_model()
+    reloaded_model = reloaded_model.to(device)
+    print("Loading saved weights...")
+    missing_keys, unexpected_keys = load_model_safely(reloaded_model, config["model_save_path"], map_location=device, strict=False)
+    if missing_keys:
+        print(f"Warning: Missing keys: {len(missing_keys)}")
+    if unexpected_keys:
+        print(f"Warning: Unexpected keys: {len(unexpected_keys)}")
+    
+    reloaded_model = torch.compile(reloaded_model)
+    reloaded_model.eval()
+    
+    # Evaluate reloaded model
+    print("Evaluating reloaded model...")
+    reloaded_test_loss = evaluate_model(reloaded_model, test_loader, 'results_reloaded_model')
+    print(f"Reloaded model test loss: {reloaded_test_loss:.4f}")
+    
+    # Compare results
+    print(f"\nComparison:")
+    print(f"  Trained model test loss: {test_loss:.4f}")
+    print(f"  Reloaded model test loss: {reloaded_test_loss:.4f}")
+    print(f"  Difference: {abs(test_loss - reloaded_test_loss):.6f}")
     
     # Visualize model architecture
     print("Visualizing model architecture...")
@@ -834,6 +1004,18 @@ def main_training_pipeline(config: Dict[str, Any]) -> Tuple[Any, Dict[str, List[
         }
     
     print("Training completed!")
+    
+    # Convert to TensorRT if enabled
+    if config.get("enable_tensorrt_conversion", False):
+        print("Starting TensorRT conversion...")
+        tensorrt_path = convert_model_to_tensorrt(config["model_save_path"], config)
+        if tensorrt_path:
+            print(f"TensorRT conversion successful: {tensorrt_path}")
+        else:
+            print("TensorRT conversion failed or was skipped")
+    else:
+        print("TensorRT conversion disabled in config")
+    
     return trained_model, history
 
 def main():
