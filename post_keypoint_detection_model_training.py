@@ -46,8 +46,8 @@ from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 DEFAULT_CONFIG = {
     "seed": 42,
     "yolo_model_path": "models/yolo_finetuned/best.pt",
-    "keypoints_data_src": "via_proj/via_project_22Aug2025_16h07m06s.json",
-    "image_path": "RGB-images-jpg/",
+    "keypoints_data_srcs": ["via_proj/via_project_22Aug2025_16h07m06s.json", "via_proj/via_project_01Sep2025_09h52m16s.json"],
+    "image_paths": ["image_data/RGB-images/", "image_data/RGB-images2/"],
     "allowed_classes": [1],
     "batch_size": 32,
     "learning_rate": 3e-5,
@@ -68,7 +68,7 @@ DEFAULT_CONFIG = {
     "gradient_clip_val": 1.0,
     "gradient_accumulation_steps": 2,
     "early_stopping_patience": 20,
-    "use_stronger_augmentation": True,
+    "use_stronger_augmentation": False,
     "dropout_rate": 0.1,
     "label_smoothing": 0.1
 }
@@ -96,17 +96,17 @@ def spatial_klloss(pred_map, target_map, eps=1e-8):
 
 # Data generation functions from test.py
 def generate_dataset_data(
-    keypoints_data_src: str,
-    image_path: str,
+    keypoints_data_srcs: List[str],
+    image_paths: List[str],
     yolo_model_finetuned,
     allowed_classes: List[int]
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
     """
-    Generate dataset data using functional approach.
+    Generate dataset data using functional approach from multiple data sources.
     
     Args:
-        keypoints_data_src: Path to keypoints JSON file
-        image_path: Path to image directory
+        keypoints_data_srcs: List of paths to keypoints JSON files
+        image_paths: List of paths to image directories
         yolo_model_finetuned: YOLO model for masking
         allowed_classes: List of allowed class IDs
     
@@ -118,51 +118,60 @@ def generate_dataset_data(
     keypoints_img_arr = []
     file_paths = []
     
-    for filename in os.listdir(image_path):
-        if not filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-            continue
-            
-        # Load and process image
-        img = cv2.imread(os.path.join(image_path, filename))
-        if img is None:
-            continue
-            
-        color_img = img.copy()
-        
-        # Get keypoints
-        orig_keypoints = get_keypoints_for_image(filename, keypoints_data_src)
-        if orig_keypoints is None:
-            continue
-        
-        # Resize image and keypoints
-        img, keypoints = resize_image_and_keypoints(img, orig_keypoints, 128, 128)
-        
-        # Apply YOLO masking
-        mask = extract_mask_compare(img, yolo_model_finetuned, allowed_classes)
-        if np.sum(mask) == 0:
-            continue
-            
-        img[mask == 0] = 0
-        
-        # Process color image and keypoints
-        color_img, keypoints = resize_image_and_keypoints(color_img, orig_keypoints, 128, 128)
-        
-        # Apply the same mask to color image
-        color_img[mask == 0] = 0
-        
-        # Create keypoint heatmap (keep original coordinate order: [x, y])
-        kp_img = np.zeros((128, 128))
-        for kp in keypoints:
-            x, y = int(kp[0]), int(kp[1])  # x, y coordinates
-            if 0 <= x < 128 and 0 <= y < 128:  # Bounds check
-                kp_img[y, x] = 1  # Note: kp_img[y, x] for numpy array indexing
-        
-        # Store data
-        img_arr.append(img)
-        rgb_img_arr.append(color_img)
-        keypoints_img_arr.append(kp_img)
-        file_paths.append(os.path.join(image_path, filename))
+    # Ensure we have matching pairs of keypoints and image paths
+    if len(keypoints_data_srcs) != len(image_paths):
+        raise ValueError(f"Number of keypoints sources ({len(keypoints_data_srcs)}) must match number of image paths ({len(image_paths)})")
     
+    # Process each data source pair
+    for keypoints_data_src, image_path in zip(keypoints_data_srcs, image_paths):
+        print(f"Processing data source: {keypoints_data_src} with images from: {image_path}")
+        
+        for filename in os.listdir(image_path):
+            if not filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                continue
+                
+            # Load and process image
+            img = cv2.imread(os.path.join(image_path, filename))
+            if img is None:
+                continue
+                
+            color_img = img.copy()
+            
+            # Get keypoints from the corresponding data source
+            orig_keypoints = get_keypoints_for_image(filename, keypoints_data_src)
+            if orig_keypoints is None:
+                continue
+            
+            # Resize image and keypoints
+            img, keypoints = resize_image_and_keypoints(img, orig_keypoints, 128, 128)
+            
+            # Apply YOLO masking
+            mask = extract_mask_compare(img, yolo_model_finetuned, allowed_classes)
+            if np.sum(mask) == 0:
+                continue
+                
+            img[mask == 0] = 0
+            
+            # Process color image and keypoints
+            color_img, keypoints = resize_image_and_keypoints(color_img, orig_keypoints, 128, 128)
+            
+            # Apply the same mask to color image
+            color_img[mask == 0] = 0
+            
+            # Create keypoint heatmap (keep original coordinate order: [x, y])
+            kp_img = np.zeros((128, 128))
+            for kp in keypoints:
+                x, y = int(kp[0]), int(kp[1])  # x, y coordinates
+                if 0 <= x < 128 and 0 <= y < 128:  # Bounds check
+                    kp_img[y, x] = 1  # Note: kp_img[y, x] for numpy array indexing
+            
+            # Store data
+            img_arr.append(img)
+            rgb_img_arr.append(color_img)
+            keypoints_img_arr.append(kp_img)
+            file_paths.append(os.path.join(image_path, filename))
+    
+    print(f"Combined dataset from {len(keypoints_data_srcs)} sources")
     return (
         np.array(img_arr),
         np.array(rgb_img_arr),
@@ -497,11 +506,65 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
     
     return compiled_model, training_history if 'training_history' in locals() else None
 
+def combine_nearby_peaks(peaks, distance_threshold=10):
+    """
+    Combine nearby peaks into single keypoints using clustering.
+    
+    Args:
+        peaks: List of peak coordinates [[y1, x1], [y2, x2], ...]
+        distance_threshold: Maximum distance to consider peaks as part of same cluster
+    
+    Returns:
+        List of combined peak coordinates
+    """
+    if not peaks:
+        return []
+    
+    # Convert to numpy array for easier manipulation
+    peaks = np.array(peaks)
+    
+    # If only one peak, return it
+    if len(peaks) == 1:
+        return peaks.tolist()
+    
+    # Calculate pairwise distances
+    from scipy.spatial.distance import pdist, squareform
+    distances = squareform(pdist(peaks))
+    
+    # Create clusters
+    clusters = []
+    used = set()
+    
+    for i in range(len(peaks)):
+        if i in used:
+            continue
+            
+        # Start a new cluster
+        cluster = [i]
+        used.add(i)
+        
+        # Find all peaks within distance_threshold
+        for j in range(i + 1, len(peaks)):
+            if j not in used and distances[i, j] <= distance_threshold:
+                cluster.append(j)
+                used.add(j)
+        
+        clusters.append(cluster)
+    
+    # Calculate centroid for each cluster
+    combined_peaks = []
+    for cluster in clusters:
+        cluster_peaks = peaks[cluster]
+        centroid = cluster_peaks.mean(axis=0)
+        combined_peaks.append(centroid)
+    
+    return combined_peaks
+
 def evaluate_model(model, testloader):
     """Evaluate the model on test set"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.eval()
-    val_loss = 0.0
+    test_loss = 0.0
     iter_count = 0
     
     # Create results directory if it doesn't exist
@@ -511,29 +574,56 @@ def evaluate_model(model, testloader):
         for batch in testloader:
             images = batch['image'].to(device)
             keypoints = batch['keypoints'].to(device)
+            file_paths = batch['file_path']  # Get original file paths
+            
             with autocast("cuda", dtype=torch.float16):
                 outputs = model(images)
                 keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
                 loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
 
-            # render the predicted keypoints on the image
-            for img, kp in zip(images.cpu().numpy(), outputs.cpu().numpy()):
-                img = np.transpose(img, (1, 2, 0)) * 255
-                # Convert RGB to BGR for OpenCV
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                kp = kp[0,:,:]
+            # render the predicted keypoints on the original images
+            for img, kp, orig_path in zip(images.cpu().numpy(), outputs.cpu().numpy(), file_paths):
+                # Load original image
+                orig_img = cv2.imread(orig_path)
+                if orig_img is None:
+                    print(f"Warning: Could not load original image: {orig_path}")
+                    continue
+                
+                # Get original image dimensions
+                orig_h, orig_w = orig_img.shape[:2]
+                
+                # Get predicted keypoints from model output
+                kp = kp[0,:,:]  # Remove batch dimension
                 peaks = thresholded_locations(kp, 0.003)
-                for p in peaks:
-                    i,j = p
-                    cv2.circle(img, (int(j), int(i)), 3, (255,0,0), -1)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                # Save test results to output dataset
-                cv2.imwrite(f'results/keypoints_{iter_count}.png', img)
+                
+                # Combine nearby peaks into single keypoints
+                combined_peaks = combine_nearby_peaks(peaks, distance_threshold=10)
+                
+                # Scale keypoint coordinates from 128x128 to original image size
+                scale_x = orig_w / 128
+                scale_y = orig_h / 128
+                
+                # Draw keypoints on original image
+                for p in combined_peaks:
+                    i, j = p  # i=row, j=col in 128x128 space
+                    # Scale to original image coordinates
+                    orig_i = int(i * scale_y)
+                    orig_j = int(j * scale_x)
+                    # Draw circle (OpenCV uses BGR)
+                    cv2.circle(orig_img, (orig_j, orig_i), 30, (0, 0, 255), -1)
+                
+                # Save result with original image name
+                filename = os.path.basename(orig_path)
+                name_without_ext = os.path.splitext(filename)[0]
+                result_path = f'results/{name_without_ext}_keypoints.png'
+                cv2.imwrite(result_path, orig_img)
                 iter_count += 1
-            val_loss += loss.item() * images.size(0)
+                
+            test_loss += loss.item() * images.size(0)
     
-    print(f'Validation Loss: {val_loss / len(testloader.dataset):.4f}')
-    return val_loss / len(testloader.dataset)
+    print(f'Test Loss: {test_loss / len(testloader.dataset):.4f}')
+    print(f'Keypoint visualizations saved to results/ directory')
+    return test_loss / len(testloader.dataset)
 
 def plot_training_curves(history, save_path):
     """Plot training and validation loss curves"""
@@ -607,8 +697,8 @@ def main_training_pipeline(config: Dict[str, Any]) -> Tuple[Any, Dict[str, List[
     # Generate dataset using the comprehensive approach from test.py
     print("Generating dataset...")
     img_arr, rgb_img_arr, keypoints_img_arr, file_paths = generate_dataset_data(
-        config["keypoints_data_src"],
-        config["image_path"],
+        config["keypoints_data_srcs"],
+        config["image_paths"],
         yolo_model_finetuned,
         config["allowed_classes"]
     )
@@ -727,8 +817,8 @@ def main_training_pipeline(config: Dict[str, Any]) -> Tuple[Any, Dict[str, List[
     
     # Evaluate regular model
     print("Evaluating regular model...")
-    val_loss = evaluate_model(trained_model, test_loader)
-    print(f"Regular model validation loss: {val_loss:.4f}")
+    test_loss = evaluate_model(trained_model, test_loader)
+    print(f"Regular model test loss: {test_loss:.4f}")
     
     # Visualize model architecture
     print("Visualizing model architecture...")
@@ -739,8 +829,8 @@ def main_training_pipeline(config: Dict[str, Any]) -> Tuple[Any, Dict[str, List[
         history = training_history
     else:
         history = {
-            "train_loss": [val_loss],  # Simplified - in real implementation, track epoch losses
-            "val_loss": [val_loss]
+            "train_loss": [test_loss],  # Simplified - in real implementation, track epoch losses
+            "val_loss": [test_loss]
         }
     
     print("Training completed!")
