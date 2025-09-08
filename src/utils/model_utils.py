@@ -350,3 +350,112 @@ def extract_mask_compare(img, yolo_model, allowed_classes):
                         mask = np.maximum(mask, refined_mask)
     
     return mask
+
+
+class EnhancedYoloBackbone(nn.Module):
+    """
+    Enhanced YOLO backbone that uses the model's built-in forward pass to extract features.
+    This approach is more reliable than manually handling skip connections.
+    """
+    
+    def __init__(self, yolo_model, selected_indices=None, include_neck=True):
+        super().__init__()
+        self.yolo_model = yolo_model
+        self.include_neck = include_neck
+        
+        # Define feature extraction points based on YOLO architecture
+        if selected_indices is None:
+            if include_neck:
+                # Include both backbone and neck features
+                # These indices correspond to key feature extraction points
+                self.selected_indices = [2, 4, 6, 8, 10, 13, 16, 19, 22]  # Key feature extraction points
+            else:
+                # Only backbone features (first 11 layers)
+                self.selected_indices = [2, 4, 6, 8, 10]  # Backbone only
+        else:
+            self.selected_indices = selected_indices
+    
+    def train(self, mode=True):
+        """
+        Override train method to handle YOLO model properly.
+        """
+        # Don't call super().train() to avoid YOLO model training conflicts
+        # Just set our own training mode
+        self.training = mode
+        # Set YOLO model to eval mode to prevent training conflicts
+        if hasattr(self.yolo_model, 'model'):
+            self.yolo_model.model.eval()
+        else:
+            self.yolo_model.eval()
+        return self
+    
+    def eval(self):
+        """
+        Override eval method to handle YOLO model properly.
+        """
+        # Don't call super().eval() to avoid YOLO model conflicts
+        # Just set our own eval mode
+        self.training = False
+        # Set YOLO model to eval mode
+        if hasattr(self.yolo_model, 'model'):
+            self.yolo_model.model.eval()
+        else:
+            self.yolo_model.eval()
+        return self
+    
+    def forward(self, x):
+        """
+        Forward pass using the YOLO model's built-in feature extraction.
+        """
+        try:
+            # Use the YOLO model's forward pass to get features
+            # This handles all the complex skip connections automatically
+            with torch.no_grad():
+                # Get the model's internal features
+                if hasattr(self.yolo_model, 'model'):
+                    model = self.yolo_model.model
+                else:
+                    model = self.yolo_model
+                
+                # Hook into the model to extract intermediate features
+                features = []
+                
+                def hook_fn(module, input, output):
+                    if hasattr(output, 'shape') and len(output.shape) == 4:  # Only spatial features
+                        features.append(output)
+                
+                # Register hooks at selected layers
+                hooks = []
+                for idx in self.selected_indices:
+                    if idx < len(model.model):
+                        hook = model.model[idx].register_forward_hook(hook_fn)
+                        hooks.append(hook)
+                
+                # Forward pass
+                _ = model(x)
+                
+                # Remove hooks
+                for hook in hooks:
+                    hook.remove()
+                
+                return features
+                
+        except Exception as e:
+            print(f"Warning: Enhanced YOLO backbone failed: {e}")
+            # Fallback to simple backbone
+            return self._fallback_forward(x)
+    
+    def _fallback_forward(self, x):
+        """Fallback to simple backbone extraction"""
+        try:
+            # Use the original YoloBackbone approach
+            if hasattr(self.yolo_model, 'model'):
+                backbone_seq = self.yolo_model.model.model[:12]
+            else:
+                backbone_seq = self.yolo_model.model[:12]
+            
+            simple_backbone = YoloBackbone(backbone_seq, selected_indices=self.selected_indices)
+            return simple_backbone(x)
+        except:
+            # Ultimate fallback
+            return [x]

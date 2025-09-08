@@ -3,3 +3,17 @@ pyrealsense2
 scikit-image
 torch
 torch-vision
+peft
+transformers
+accelerate
+bitsandbytes
+matplotlib
+pandas
+# RoboPoint dependencies
+pillow
+numpy
+tqdm
+# Optional: for better performance
+flash-attn
+# For model serving (optional)
+gradio

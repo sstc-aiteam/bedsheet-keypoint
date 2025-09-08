@@ -261,6 +261,7 @@ realsense/realsense_data/
 realsense/realsense_data2/
 image_data/
 architecture_full.png
+resources/
 
 # Documentation files (keep only README.md)
 *.md

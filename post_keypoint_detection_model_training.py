@@ -34,9 +34,10 @@ from src.utils import (
     YoloBackbone, 
     batch_gaussian_blur,
     extract_mask_compare,
-    thresholded_locations
+    thresholded_locations,
+    EnhancedYoloBackbone
 )
-from src.utils.model_utils import batch_entropy
+from src.utils.model_utils import EnhancedYoloBackbone, batch_entropy
 from src.models import HybridKeypointNet
 from src.models.efficient_keypoint_net import EfficientViTKeypointNet
 from src.utils import kl_heatmap_loss
@@ -79,7 +80,7 @@ DEFAULT_CONFIG = {
     "use_fp16": True,
     "gradient_clip_val": 1.0,
     "gradient_accumulation_steps": 2,
-    "early_stopping_patience": 20,
+    "early_stopping_patience": 100,
     "use_stronger_augmentation": False,
     "dropout_rate": 0.1,
     "label_smoothing": 0.1,
@@ -362,7 +363,7 @@ class KeypointDataset(torch.utils.data.Dataset):
         file_paths: List[str], 
         transform=None
     ):
-        self.images = images.astype(np.float32)
+        self.images = images.astype(np.float32) / 255
         self.rgb_images = rgb_images.astype(np.float32)
         self.keypoints = keypoints.astype(np.float32)
         self.file_paths = file_paths
@@ -397,12 +398,19 @@ def create_model():
     """Create and configure the model using the working approach"""
     # yolo vit
     yolo_model = YOLO('yolo11l-pose.pt')
-    backbone_seq = yolo_model.model.model[:12]
-    backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
+    backbone = EnhancedYoloBackbone(
+        yolo_model, 
+        include_neck=True,  # Include neck features for better multi-scale representation
+        selected_indices=[2, 4, 6, 8, 10, 13, 16, 19, 22]  # Strategic feature selection
+    )
+    
     input_dummy = torch.randn(1, 3, 128, 128)
     with torch.no_grad():
         feats = backbone(input_dummy)
-    in_channels_list = [f.shape[1] for f in feats]
+        in_channels_list = [f.shape[1] for f in feats]
+        print(f"Enhanced YOLO backbone features: {len(feats)}")
+        print(f"Input channels: {in_channels_list}")
+    
     keypoint_net = HybridKeypointNet(backbone, in_channels_list)
     model = keypoint_net
     
@@ -597,13 +605,14 @@ def convert_model_to_tensorrt(model_path: str, config: Dict[str, Any]) -> Option
         # Generate TensorRT model path
         tensorrt_path = model_path.replace('.pth', '.trt')
         
-        # Convert model
+        # Convert model (use Enhanced YOLO since that's what was used for training)
         tensorrt_path = convert_keypoint_model_to_tensorrt(
             model_path=model_path,
             output_path=tensorrt_path,
             input_shape=(1, 3, 128, 128),
             precision=config.get("tensorrt_precision", "fp16"),
-            workspace_size=config.get("tensorrt_workspace_size", 1 << 30)
+            workspace_size=config.get("tensorrt_workspace_size", 1 << 30),
+            use_enhanced_yolo=True  # Match the training backbone
         )
         
         print(f"TensorRT conversion completed: {tensorrt_path}")
@@ -614,7 +623,8 @@ def convert_model_to_tensorrt(model_path: str, config: Dict[str, Any]) -> Option
             benchmark_results = benchmark_tensorrt_vs_pytorch(
                 pytorch_model_path=model_path,
                 tensorrt_model_path=tensorrt_path,
-                num_runs=100
+                num_runs=100,
+                use_enhanced_yolo=True  # Match the training backbone
             )
             
             print(f"Benchmark Results:")

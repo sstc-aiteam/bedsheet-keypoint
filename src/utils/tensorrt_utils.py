@@ -256,7 +256,8 @@ def convert_keypoint_model_to_tensorrt(
     output_path: str,
     input_shape: Tuple[int, int, int, int] = (1, 3, 128, 128),
     precision: str = "fp16",
-    workspace_size: int = 1 << 30
+    workspace_size: int = 1 << 30,
+    use_enhanced_yolo: bool = False
 ) -> str:
     """
     Convert keypoint detection model to TensorRT format.
@@ -267,6 +268,7 @@ def convert_keypoint_model_to_tensorrt(
         input_shape: Input tensor shape
         precision: Precision mode ("fp32", "fp16", "int8")
         workspace_size: Maximum workspace size in bytes
+        use_enhanced_yolo: Whether to use Enhanced YOLO backbone (must match training)
         
     Returns:
         Path to saved TensorRT model
@@ -275,22 +277,34 @@ def convert_keypoint_model_to_tensorrt(
     
     # Import model architecture and utilities
     from src.models.hybrid_keypoint_net import HybridKeypointNet
-    from src.utils.model_utils import YoloBackbone
+    from src.utils.model_utils import YoloBackbone, EnhancedYoloBackbone
     from ultralytics import YOLO
     
     # Create model with proper initialization
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Create YOLO backbone (use the same model as in training)
-    yolo_model = YOLO('yolo11l-pose.pt')
-    backbone_seq = yolo_model.model.model[:12]
-    backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
+    if use_enhanced_yolo:
+        # Enhanced YOLO + ViT (for models trained with Enhanced YOLO)
+        logger.info("Using Enhanced YOLO backbone for conversion")
+        yolo_model = YOLO('yolo11l-pose.pt')
+        backbone = EnhancedYoloBackbone(
+            yolo_model, 
+            include_neck=True,
+            selected_indices=[2, 4, 6, 8, 10, 13, 16, 19, 22]
+        )
+    else:
+        # Original YOLO + ViT (for models trained with original YOLO)
+        logger.info("Using Original YOLO backbone for conversion")
+        yolo_model = YOLO('yolo11l-pose.pt')
+        backbone_seq = yolo_model.model.model[:12]
+        backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
     
     # Get input channels list
     input_dummy = torch.randn(1, 3, 128, 128)
     with torch.no_grad():
         feats = backbone(input_dummy)
     in_channels_list = [f.shape[1] for f in feats]
+    logger.info(f"Backbone features: {len(feats)}, Input channels: {in_channels_list}")
     
     # Create model
     model = HybridKeypointNet(backbone, in_channels_list)
@@ -333,7 +347,8 @@ def benchmark_tensorrt_vs_pytorch(
     pytorch_model_path: str,
     tensorrt_model_path: str,
     input_shape: Tuple[int, int, int, int] = (1, 3, 128, 128),
-    num_runs: int = 100
+    num_runs: int = 100,
+    use_enhanced_yolo: bool = False
 ) -> Dict[str, Any]:
     """
     Benchmark TensorRT vs PyTorch inference performance.
@@ -343,6 +358,7 @@ def benchmark_tensorrt_vs_pytorch(
         tensorrt_model_path: Path to TensorRT model
         input_shape: Input tensor shape
         num_runs: Number of benchmark runs
+        use_enhanced_yolo: Whether to use Enhanced YOLO backbone (must match training)
         
     Returns:
         Dictionary with benchmark results
@@ -351,22 +367,34 @@ def benchmark_tensorrt_vs_pytorch(
     
     # Import model architecture and utilities
     from src.models.hybrid_keypoint_net import HybridKeypointNet
-    from src.utils.model_utils import YoloBackbone
+    from src.utils.model_utils import YoloBackbone, EnhancedYoloBackbone
     from ultralytics import YOLO
     
     # Create PyTorch model with proper initialization
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Create YOLO backbone (use the same model as in training)
-    yolo_model = YOLO('yolo11l-pose.pt')
-    backbone_seq = yolo_model.model.model[:12]
-    backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
+    if use_enhanced_yolo:
+        # Enhanced YOLO + ViT (for models trained with Enhanced YOLO)
+        logger.info("Using Enhanced YOLO backbone for benchmark")
+        yolo_model = YOLO('yolo11l-pose.pt')
+        backbone = EnhancedYoloBackbone(
+            yolo_model, 
+            include_neck=True,
+            selected_indices=[2, 4, 6, 8, 10, 13, 16, 19, 22]
+        )
+    else:
+        # Original YOLO + ViT (for models trained with original YOLO)
+        logger.info("Using Original YOLO backbone for benchmark")
+        yolo_model = YOLO('yolo11l-pose.pt')
+        backbone_seq = yolo_model.model.model[:12]
+        backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
     
     # Get input channels list
     input_dummy = torch.randn(1, 3, 128, 128)
     with torch.no_grad():
         feats = backbone(input_dummy)
     in_channels_list = [f.shape[1] for f in feats]
+    logger.info(f"Backbone features: {len(feats)}, Input channels: {in_channels_list}")
     
     # Create model
     pytorch_model = HybridKeypointNet(backbone, in_channels_list)
