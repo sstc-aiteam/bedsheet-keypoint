@@ -261,7 +261,17 @@ realsense/realsense_data/
 realsense/realsense_data2/
 image_data/
 architecture_full.png
+resources/
 
 # Documentation files (keep only README.md)
 *.md
 !README.md
+# Training artifacts
+models/*/tb/
+models/*.pth
+models/*.trt
+models/*.json
+*.log
+__pycache__/
+*.pyc
+*.pyo

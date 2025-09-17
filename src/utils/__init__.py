@@ -3,7 +3,8 @@ Utility functions for the bed sheet folding robot.
 """
 
 from .model_utils import (
-    YoloBackbone, 
+    YoloBackbone,
+    EnhancedYoloBackbone, 
     MultiScaleFusion, 
     soft_argmax, 
     spatial_softmax,
@@ -25,6 +26,7 @@ from .quantization_utils import (
 __all__ = [
     # Model utilities
     'YoloBackbone',
+    'EnhancedYoloBackbone',
     'MultiScaleFusion', 
     'soft_argmax',
     'spatial_softmax',

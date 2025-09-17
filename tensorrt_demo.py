@@ -42,13 +42,16 @@ def load_model_safely(model, load_path: str, map_location="cpu", strict: bool = 
 def load_pytorch_model(model_path: str):
     """Load PyTorch model using the exact same approach as post training script."""
     from src.models.hybrid_keypoint_net import HybridKeypointNet
-    from src.models.efficient_keypoint_net import YoloBackbone
+    from src.utils.model_utils import EnhancedYoloBackbone
     from ultralytics import YOLO
     
     # Create model architecture (exact same as post training script)
     yolo_model = YOLO('yolo11l-pose.pt')
-    backbone_seq = yolo_model.model.model[:12]
-    backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
+    backbone = EnhancedYoloBackbone(
+        yolo_model, 
+        include_neck=True,  # Include neck features for better multi-scale representation
+        selected_indices=[2, 4, 6, 8, 10, 13, 16, 19, 22]  # Strategic feature selection
+    )
     
     input_dummy = torch.randn(1, 3, 128, 128)
     with torch.no_grad():
@@ -475,7 +478,7 @@ def evaluate_single_image_like_post_training(model, image_path, segmenter=None):
     img_rgb = cv2.cvtColor(masked_orig, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img_rgb, (128, 128))
     # Match post-training: use 0–255 float32 (no normalization)
-    img_normalized = img_resized.astype(np.float32)
+    img_normalized = img_resized.astype(np.float32) / 255
     img_tensor = np.transpose(img_normalized, (2, 0, 1))
     img_tensor = np.expand_dims(img_tensor, axis=0)
     
@@ -592,7 +595,7 @@ def evaluate_single_image_tensorrt(tensorrt_model, image_path, segmenter=None):
     # Preprocess image for model input (resize to 128x128, no normalization)
     img_rgb = cv2.cvtColor(masked_orig, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img_rgb, (128, 128))
-    img_normalized = img_resized.astype(np.float32)  # No /255
+    img_normalized = img_resized.astype(np.float32) /255
     img_tensor = np.transpose(img_normalized, (2, 0, 1))
     img_tensor = np.expand_dims(img_tensor, axis=0)
     
@@ -760,7 +763,7 @@ def main():
         # Prepare input tensor for benchmarking
         img_rgb = cv2.cvtColor(cv2.imread(sample_image), cv2.COLOR_BGR2RGB)
         img_resized = cv2.resize(img_rgb, (128, 128))
-        img_normalized = img_resized.astype(np.float32)  # No /255 to match training
+        img_normalized = img_resized.astype(np.float32) # to match training
         benchmark_input = np.transpose(img_normalized, (2, 0, 1))
         benchmark_input = np.expand_dims(benchmark_input, axis=0)
         

@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """
-Keypoint Detection Model Training
+Keypoint Detection Model Training with Enhanced YOLO Backbone
 Migrated from keypoint_detection_model_training.ipynb
-Updated to use the new src/ structure
+Updated to use the new src/ structure and Enhanced YOLO Backbone
+
+Enhanced YOLO Backbone Benefits:
+- Full architecture utilization (backbone + neck)
+- Proper skip connection handling
+- Strategic feature selection for better performance
+- Multi-scale feature pyramid network (FPN) features
+
+Usage Options:
+- create_model(use_enhanced_yolo=True) for enhanced YOLO (default, recommended)
+- create_model(use_enhanced_yolo=False) for original YOLO (fallback)
 """
 
 import pandas as pd
@@ -26,7 +36,8 @@ from shared.functions import *
 from src.models.hybrid_keypoint_net import HybridKeypointNet
 from src.models.efficient_keypoint_net import EfficientViTKeypointNet
 from src.utils.model_utils import (
-    YoloBackbone, 
+    YoloBackbone,
+    EnhancedYoloBackbone, 
     batch_gaussian_blur, 
     batch_entropy, 
     thresholded_locations
@@ -230,18 +241,45 @@ def test_keypoint_visualization(full_dataset, index=9):
     plt.axis('off')
     plt.show()
 
-def create_model():
+def create_model(use_enhanced_yolo=True):
     """Create and configure the model"""
-    # yolo vit
-    yolo_model = YOLO('yolo11l-pose.pt')
-    backbone_seq = yolo_model.model.model[:12]
-    backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
-    input_dummy = torch.randn(1, 3, 128, 128)
-    with torch.no_grad():
-        feats = backbone(input_dummy)
-    in_channels_list = [f.shape[1] for f in feats]
-    keypoint_net = HybridKeypointNet(backbone, in_channels_list)
-    model = keypoint_net
+    
+    if use_enhanced_yolo:
+        # Enhanced YOLO + ViT (recommended)
+        print("Creating Enhanced YOLO + ViT model...")
+        yolo_model = YOLO('yolo11l-pose.pt')
+        backbone = EnhancedYoloBackbone(
+            yolo_model, 
+            include_neck=True,  # Include neck features for better multi-scale representation
+            selected_indices=[2, 4, 6, 8, 10, 13, 16, 19, 22]  # Strategic feature selection
+        )
+        
+        input_dummy = torch.randn(1, 3, 128, 128)
+        with torch.no_grad():
+            feats = backbone(input_dummy)
+            in_channels_list = [f.shape[1] for f in feats]
+            print(f"Enhanced YOLO backbone features: {len(feats)}")
+            print(f"Input channels: {in_channels_list}")
+        
+        keypoint_net = HybridKeypointNet(backbone, in_channels_list)
+        model = keypoint_net
+        
+    else:
+        # Original YOLO + ViT (fallback)
+        print("Creating Original YOLO + ViT model...")
+        yolo_model = YOLO('yolo11l-pose.pt')
+        backbone_seq = yolo_model.model.model[:12]
+        backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
+        
+        input_dummy = torch.randn(1, 3, 128, 128)
+        with torch.no_grad():
+            feats = backbone(input_dummy)
+            in_channels_list = [f.shape[1] for f in feats]
+            print(f"Original YOLO backbone features: {len(feats)}")
+            print(f"Input channels: {in_channels_list}")
+        
+        keypoint_net = HybridKeypointNet(backbone, in_channels_list)
+        model = keypoint_net
     
     # Freeze backbone parameters
     for param in model.backbone.parameters():
@@ -268,7 +306,7 @@ def load_model_safely(model, load_path: str, map_location="cpu", strict: bool = 
     target = _get_base_module(model)
     return target.load_state_dict(cleaned, strict=strict)
 
-def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_model=False, early_stopping_patience: int = 20):
+def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_model=False, early_stopping_patience: int = 100):
     """Train the model"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
@@ -454,13 +492,15 @@ def main():
     
     # Create model
     print("Creating model...")
+    # Options: create_model(use_enhanced_yolo=True) for enhanced YOLO (default)
+    #          create_model(use_enhanced_yolo=False) for original YOLO
     model = create_model()
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
     
     # Train model
     print("Starting training...")
     load_model = False  # Set to True to load existing model
-    trained_model = train_model(model, trainloader, valloader, testloader, num_epochs=300, load_model=load_model, early_stopping_patience=20)
+    trained_model = train_model(model, trainloader, valloader, testloader, num_epochs=300, load_model=load_model, early_stopping_patience=100)
     
     # Evaluate model
     print("Evaluating model...")

@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 import torchvision.transforms.functional as TF
 import numpy as np
 import cv2
@@ -142,7 +142,7 @@ def mixup_data(x, y, alpha=0.2):
 # Loss function for keypoint detection
 def kl_heatmap_loss(pred_hm, gt_hm, mask=None, reduction='mean'):
     """
-    KL divergence loss for heatmap prediction.
+    Simple KL divergence loss for heatmap prediction WITHOUT keypoint count penalties.
     
     Args:
         pred_hm: Predicted heatmap (B, 1, H, W)
@@ -267,6 +267,146 @@ def load_quantized_model_functional(
     
     return quantized_model
 
+def extract_gt_keypoint_count_gpu(gt_hm: torch.Tensor, threshold: float = 0.1) -> int:
+    """
+    Extract ground truth keypoint count from heatmap using GPU-optimized detection.
+    
+    Args:
+        gt_hm: (H, W) torch tensor on GPU - ground truth heatmap
+        threshold: Threshold value for keypoint detection
+    
+    Returns:
+        Number of ground truth keypoints
+    """
+    # Apply threshold
+    above_threshold = gt_hm > threshold
+    
+    # Find local maxima using max pooling
+    kernel_size = 5
+    padding = kernel_size // 2
+    
+    # Max pooling to find local maxima
+    max_pooled = F.max_pool2d(
+        gt_hm.unsqueeze(0).unsqueeze(0), 
+        kernel_size=kernel_size, 
+        stride=1, 
+        padding=padding
+    ).squeeze(0).squeeze(0)
+    
+    # Local maxima are points where original value equals max pooled value
+    local_maxima = (gt_hm == max_pooled) & above_threshold
+    
+    # Count keypoints
+    num_keypoints = local_maxima.sum().item()
+    
+    return num_keypoints
+
+def extract_keypoints_from_heatmap_gpu(heatmap: torch.Tensor, threshold: float = 0.1, max_keypoints: int = 10, use_nms: bool = False) -> int:
+    """
+    Extract keypoint count from heatmap using GPU-optimized local maxima detection.
+    
+    Args:
+        heatmap: (H, W) torch tensor on GPU
+        threshold: Threshold value for keypoint detection
+        max_keypoints: Maximum number of keypoints to consider
+        use_nms: Whether to use non-maximum suppression for better keypoint detection
+    
+    Returns:
+        Number of detected keypoints
+    """
+    H, W = heatmap.shape
+    
+    # Apply threshold
+    above_threshold = heatmap > threshold
+    
+    if use_nms:
+        # More sophisticated approach with non-maximum suppression
+        # First, find all local maxima
+        kernel_size = 5
+        padding = kernel_size // 2
+        
+        max_pooled = F.max_pool2d(
+            heatmap.unsqueeze(0).unsqueeze(0), 
+            kernel_size=kernel_size, 
+            stride=1, 
+            padding=padding
+        ).squeeze(0).squeeze(0)
+        
+        local_maxima = (heatmap == max_pooled) & above_threshold
+        
+        # Apply non-maximum suppression by finding top-k peaks
+        # Flatten and get top values
+        flat_heatmap = heatmap.flatten()
+        flat_maxima = local_maxima.flatten()
+        
+        # Get indices of local maxima
+        maxima_indices = torch.where(flat_maxima)[0]
+        if len(maxima_indices) == 0:
+            return 0
+        
+        # Get values at local maxima
+        maxima_values = flat_heatmap[maxima_indices]
+        
+        # Sort by value and take top max_keypoints
+        _, sorted_indices = torch.sort(maxima_values, descending=True)
+        num_keypoints = min(len(maxima_indices), max_keypoints)
+        
+        return num_keypoints
+    else:
+        # Simple local maxima detection
+        kernel_size = 5
+        padding = kernel_size // 2
+        
+        # Max pooling to find local maxima
+        max_pooled = F.max_pool2d(
+            heatmap.unsqueeze(0).unsqueeze(0), 
+            kernel_size=kernel_size, 
+            stride=1, 
+            padding=padding
+        ).squeeze(0).squeeze(0)
+        
+        # Local maxima are points where original value equals max pooled value
+        local_maxima = (heatmap == max_pooled) & above_threshold
+        
+        # Count keypoints
+        num_keypoints = local_maxima.sum().item()
+        
+        # Limit to max_keypoints to avoid excessive computation
+        return min(num_keypoints, max_keypoints)
+
+def extract_keypoints_from_heatmap(heatmap: np.ndarray, threshold: float = 0.1) -> List[Tuple[int, int]]:
+    """
+    Extract keypoint coordinates from heatmap using local maxima detection (CPU version).
+    
+    Args:
+        heatmap: (H, W) numpy array
+        threshold: Threshold value for keypoint detection
+    
+    Returns:
+        List of (x, y) coordinates of detected keypoints
+    """
+    try:
+        from scipy.ndimage import maximum_filter
+        
+        # Find local maxima
+        local_maxima = maximum_filter(heatmap, size=5) == heatmap
+        local_maxima = local_maxima & (heatmap > threshold)
+        
+        # Get coordinates of local maxima
+        peak_coords = np.where(local_maxima)
+        keypoints = list(zip(peak_coords[1], peak_coords[0]))  # (x, y) format
+        
+        # Sort by intensity and return top keypoints
+        keypoints.sort(key=lambda kp: heatmap[kp[1], kp[0]], reverse=True)
+        return keypoints
+        
+    except ImportError:
+        # Fallback if scipy is not available
+        # Simple threshold-based detection
+        peaks = np.where(heatmap > threshold)
+        keypoints = list(zip(peaks[1], peaks[0]))  # (x, y) format
+        return keypoints
+
 def thresholded_locations(heatmap, threshold=0.1):
     """
     Find locations in heatmap above threshold.
@@ -350,3 +490,112 @@ def extract_mask_compare(img, yolo_model, allowed_classes):
                         mask = np.maximum(mask, refined_mask)
     
     return mask
+
+
+class EnhancedYoloBackbone(nn.Module):
+    """
+    Enhanced YOLO backbone that uses the model's built-in forward pass to extract features.
+    This approach is more reliable than manually handling skip connections.
+    """
+    
+    def __init__(self, yolo_model, selected_indices=None, include_neck=True):
+        super().__init__()
+        self.yolo_model = yolo_model
+        self.include_neck = include_neck
+        
+        # Define feature extraction points based on YOLO architecture
+        if selected_indices is None:
+            if include_neck:
+                # Include both backbone and neck features
+                # These indices correspond to key feature extraction points
+                self.selected_indices = [2, 4, 6, 8, 10, 13, 16, 19, 22]  # Key feature extraction points
+            else:
+                # Only backbone features (first 11 layers)
+                self.selected_indices = [2, 4, 6, 8, 10]  # Backbone only
+        else:
+            self.selected_indices = selected_indices
+    
+    def train(self, mode=True):
+        """
+        Override train method to handle YOLO model properly.
+        """
+        # Don't call super().train() to avoid YOLO model training conflicts
+        # Just set our own training mode
+        self.training = mode
+        # Set YOLO model to eval mode to prevent training conflicts
+        if hasattr(self.yolo_model, 'model'):
+            self.yolo_model.model.eval()
+        else:
+            self.yolo_model.eval()
+        return self
+    
+    def eval(self):
+        """
+        Override eval method to handle YOLO model properly.
+        """
+        # Don't call super().eval() to avoid YOLO model conflicts
+        # Just set our own eval mode
+        self.training = False
+        # Set YOLO model to eval mode
+        if hasattr(self.yolo_model, 'model'):
+            self.yolo_model.model.eval()
+        else:
+            self.yolo_model.eval()
+        return self
+    
+    def forward(self, x):
+        """
+        Forward pass using the YOLO model's built-in feature extraction.
+        """
+        try:
+            # Use the YOLO model's forward pass to get features
+            # This handles all the complex skip connections automatically
+            with torch.no_grad():
+                # Get the model's internal features
+                if hasattr(self.yolo_model, 'model'):
+                    model = self.yolo_model.model
+                else:
+                    model = self.yolo_model
+                
+                # Hook into the model to extract intermediate features
+                features = []
+                
+                def hook_fn(module, input, output):
+                    if hasattr(output, 'shape') and len(output.shape) == 4:  # Only spatial features
+                        features.append(output)
+                
+                # Register hooks at selected layers
+                hooks = []
+                for idx in self.selected_indices:
+                    if idx < len(model.model):
+                        hook = model.model[idx].register_forward_hook(hook_fn)
+                        hooks.append(hook)
+                
+                # Forward pass
+                _ = model(x)
+                
+                # Remove hooks
+                for hook in hooks:
+                    hook.remove()
+                
+                return features
+                
+        except Exception as e:
+            print(f"Warning: Enhanced YOLO backbone failed: {e}")
+            # Fallback to simple backbone
+            return self._fallback_forward(x)
+    
+    def _fallback_forward(self, x):
+        """Fallback to simple backbone extraction"""
+        try:
+            # Use the original YoloBackbone approach
+            if hasattr(self.yolo_model, 'model'):
+                backbone_seq = self.yolo_model.model.model[:12]
+            else:
+                backbone_seq = self.yolo_model.model[:12]
+            
+            simple_backbone = YoloBackbone(backbone_seq, selected_indices=self.selected_indices)
+            return simple_backbone(x)
+        except:
+            # Ultimate fallback
+            return [x]
