@@ -13,7 +13,10 @@ pandas
 pillow
 numpy
 tqdm
+mediapy
 # Optional: for better performance
 flash-attn
 # For model serving (optional)
 gradio
+# For cloth simulation
+mujoco==3.2.3

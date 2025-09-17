@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 import torchvision.transforms.functional as TF
 import numpy as np
 import cv2
@@ -142,7 +142,7 @@ def mixup_data(x, y, alpha=0.2):
 # Loss function for keypoint detection
 def kl_heatmap_loss(pred_hm, gt_hm, mask=None, reduction='mean'):
     """
-    KL divergence loss for heatmap prediction.
+    Simple KL divergence loss for heatmap prediction WITHOUT keypoint count penalties.
     
     Args:
         pred_hm: Predicted heatmap (B, 1, H, W)
@@ -266,6 +266,146 @@ def load_quantized_model_functional(
     quantized_model.eval()
     
     return quantized_model
+
+def extract_gt_keypoint_count_gpu(gt_hm: torch.Tensor, threshold: float = 0.1) -> int:
+    """
+    Extract ground truth keypoint count from heatmap using GPU-optimized detection.
+    
+    Args:
+        gt_hm: (H, W) torch tensor on GPU - ground truth heatmap
+        threshold: Threshold value for keypoint detection
+    
+    Returns:
+        Number of ground truth keypoints
+    """
+    # Apply threshold
+    above_threshold = gt_hm > threshold
+    
+    # Find local maxima using max pooling
+    kernel_size = 5
+    padding = kernel_size // 2
+    
+    # Max pooling to find local maxima
+    max_pooled = F.max_pool2d(
+        gt_hm.unsqueeze(0).unsqueeze(0), 
+        kernel_size=kernel_size, 
+        stride=1, 
+        padding=padding
+    ).squeeze(0).squeeze(0)
+    
+    # Local maxima are points where original value equals max pooled value
+    local_maxima = (gt_hm == max_pooled) & above_threshold
+    
+    # Count keypoints
+    num_keypoints = local_maxima.sum().item()
+    
+    return num_keypoints
+
+def extract_keypoints_from_heatmap_gpu(heatmap: torch.Tensor, threshold: float = 0.1, max_keypoints: int = 10, use_nms: bool = False) -> int:
+    """
+    Extract keypoint count from heatmap using GPU-optimized local maxima detection.
+    
+    Args:
+        heatmap: (H, W) torch tensor on GPU
+        threshold: Threshold value for keypoint detection
+        max_keypoints: Maximum number of keypoints to consider
+        use_nms: Whether to use non-maximum suppression for better keypoint detection
+    
+    Returns:
+        Number of detected keypoints
+    """
+    H, W = heatmap.shape
+    
+    # Apply threshold
+    above_threshold = heatmap > threshold
+    
+    if use_nms:
+        # More sophisticated approach with non-maximum suppression
+        # First, find all local maxima
+        kernel_size = 5
+        padding = kernel_size // 2
+        
+        max_pooled = F.max_pool2d(
+            heatmap.unsqueeze(0).unsqueeze(0), 
+            kernel_size=kernel_size, 
+            stride=1, 
+            padding=padding
+        ).squeeze(0).squeeze(0)
+        
+        local_maxima = (heatmap == max_pooled) & above_threshold
+        
+        # Apply non-maximum suppression by finding top-k peaks
+        # Flatten and get top values
+        flat_heatmap = heatmap.flatten()
+        flat_maxima = local_maxima.flatten()
+        
+        # Get indices of local maxima
+        maxima_indices = torch.where(flat_maxima)[0]
+        if len(maxima_indices) == 0:
+            return 0
+        
+        # Get values at local maxima
+        maxima_values = flat_heatmap[maxima_indices]
+        
+        # Sort by value and take top max_keypoints
+        _, sorted_indices = torch.sort(maxima_values, descending=True)
+        num_keypoints = min(len(maxima_indices), max_keypoints)
+        
+        return num_keypoints
+    else:
+        # Simple local maxima detection
+        kernel_size = 5
+        padding = kernel_size // 2
+        
+        # Max pooling to find local maxima
+        max_pooled = F.max_pool2d(
+            heatmap.unsqueeze(0).unsqueeze(0), 
+            kernel_size=kernel_size, 
+            stride=1, 
+            padding=padding
+        ).squeeze(0).squeeze(0)
+        
+        # Local maxima are points where original value equals max pooled value
+        local_maxima = (heatmap == max_pooled) & above_threshold
+        
+        # Count keypoints
+        num_keypoints = local_maxima.sum().item()
+        
+        # Limit to max_keypoints to avoid excessive computation
+        return min(num_keypoints, max_keypoints)
+
+def extract_keypoints_from_heatmap(heatmap: np.ndarray, threshold: float = 0.1) -> List[Tuple[int, int]]:
+    """
+    Extract keypoint coordinates from heatmap using local maxima detection (CPU version).
+    
+    Args:
+        heatmap: (H, W) numpy array
+        threshold: Threshold value for keypoint detection
+    
+    Returns:
+        List of (x, y) coordinates of detected keypoints
+    """
+    try:
+        from scipy.ndimage import maximum_filter
+        
+        # Find local maxima
+        local_maxima = maximum_filter(heatmap, size=5) == heatmap
+        local_maxima = local_maxima & (heatmap > threshold)
+        
+        # Get coordinates of local maxima
+        peak_coords = np.where(local_maxima)
+        keypoints = list(zip(peak_coords[1], peak_coords[0]))  # (x, y) format
+        
+        # Sort by intensity and return top keypoints
+        keypoints.sort(key=lambda kp: heatmap[kp[1], kp[0]], reverse=True)
+        return keypoints
+        
+    except ImportError:
+        # Fallback if scipy is not available
+        # Simple threshold-based detection
+        peaks = np.where(heatmap > threshold)
+        keypoints = list(zip(peaks[1], peaks[0]))  # (x, y) format
+        return keypoints
 
 def thresholded_locations(heatmap, threshold=0.1):
     """

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-CLIP-style cloth keypoint training with a single-channel heatmap target.
+Meta CLIP-style cloth keypoint training with a single-channel heatmap target.
 
 Design:
-- Backbone: CLIP ViT-B/16 vision encoder (Hugging Face)
+- Backbone: Meta CLIP ViT-B/16 vision encoder (Facebook)
 - Head: lightweight upsampling conv head to full-resolution 1xHxW heatmap
 - Target: single heatmap with Gaussians at all visible corners (some images may have <4)
 - Loss: KL heatmap loss vs on-the-fly blurred GT (single channel)
@@ -11,7 +11,7 @@ Design:
 - Optional LoRA on vision attention projections (PEFT)
 
 Outputs:
-- Saves best adapters (if LoRA) and head weights in models/clip_style_cloth
+- Saves best adapters (if LoRA) and head weights in models/meta_clip_style_cloth
 - Persists training_config.json with image_size, etc.
 """
 
@@ -150,7 +150,7 @@ def extract_keypoints_from_heatmap(heatmap: np.ndarray, max_keypoints: int = 4, 
     return unique_keypoints[:max_keypoints]
 
 
-class ClipClothHeatmapDataset(Dataset):
+class MetaClipClothHeatmapDataset(Dataset):
     def __init__(self, data_dir: str, image_size: int = 256, max_samples: int = None, augment: bool = True,
                  pairs: List[Tuple[Path, Path]] | None = None):
         self.data_dir = Path(data_dir)
@@ -171,13 +171,12 @@ class ClipClothHeatmapDataset(Dataset):
         self.pairs = pairs
         print(f"Dataset pairs: {len(self.pairs)} | augment={self.augment}")
 
-        # CLIP normalization (OpenAI)
+        # Meta CLIP normalization (same as CLIP for compatibility)
         self.mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3, 1, 1)
         self.std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3, 1, 1)
 
     def __len__(self):
         return len(self.pairs)
-
 
     def __getitem__(self, idx):
         img_path, kp_path = self.pairs[idx]
@@ -228,7 +227,7 @@ class ClipClothHeatmapDataset(Dataset):
         return sample
 
 
-def collate_clip_batch(batch):
+def collate_meta_clip_batch(batch):
     """Custom collate to handle variable-length gt_points.
 
     Stacks tensors and keeps image_id and gt_points as python lists.
@@ -305,7 +304,6 @@ class ClothAugmentation:
         
         return img, heatmap
     
-    
     def _rotate_image_and_heatmap(self, img: np.ndarray, heatmap: np.ndarray, angle: float) -> Tuple[np.ndarray, np.ndarray]:
         """Rotate image and heatmap using the same rotation matrix."""
         h, w = img.shape[:2]
@@ -377,9 +375,6 @@ class ClothAugmentation:
         return img
 
 
-# Model classes are now imported from src.models
-
-
 def adjust_for_vram(cfg):
     try:
         if torch.cuda.is_available():
@@ -407,17 +402,18 @@ def save_config(cfg: Dict, out_dir: str):
         json.dump(cfg, f, indent=2)
 
 
-def train_clip_heatmap():
+def train_meta_clip_heatmap():
     set_seed(42)
 
     if not HF_AVAILABLE:
         print("Transformers not available; install transformers to proceed.")
         return
 
+    # Meta CLIP model configuration
     config = {
-        'model_name': 'openai/clip-vit-base-patch16',
+        'model_name': 'facebook/metaclip-b16-fullcc2.5b',  # Meta CLIP model
         'data_dir': 'cloth_data_gen/output',
-        'output_dir': 'models/clip_style_cloth',
+        'output_dir': 'models/meta_clip_style_cloth',
         'image_size': 256,
         'auto_image_size': True,
         'batch_size': 4,
@@ -433,26 +429,32 @@ def train_clip_heatmap():
         'prior_prompts': [
             "a photo of a cloth corner",
             "fabric corner point",
-            "sharp cloth corner"
+            "sharp cloth corner",
+            "textile edge corner",  # Enhanced prompts for Meta CLIP
+            "fabric fold corner",
+            "cloth seam corner"
+        ],
+        'negative_prompts': [
+            "smooth fabric surface",
+            "flat textile area", 
+            "cloth without corners",
+            "fabric center area"
         ],
         'prior_weight': 0.5,
         'max_samples': None,
         'early_stopping_patience': 10,
         'splits': {'train': 0.8, 'val': 0.1, 'test': 0.1},
-        'results_dir': 'results_clip',
-        # Keypoint count regularization
-        'keypoint_count_weight': 0.1,  # Weight for penalizing excess keypoints
-        'max_keypoints': 4,  # Maximum allowed keypoints (fallback if use_gt_keypoint_count=False)
-        'use_gt_keypoint_count': True,  # Use actual GT keypoint count as target
+        'results_dir': 'results_meta_clip',
     }
 
     config = adjust_for_vram(config)
+    print(f"Training with Meta CLIP model: {config['model_name']}")
     print(f"Training with image_size={config['image_size']} batch_size={config['batch_size']}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Build full list of pairs for deterministic split
-    scan_ds = ClipClothHeatmapDataset(config['data_dir'], config['image_size'], config['max_samples'], augment=False)
+    scan_ds = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], config['max_samples'], augment=False)
     pairs = scan_ds.pairs
     rng = np.random.RandomState(42)
     idx = np.arange(len(pairs))
@@ -469,9 +471,9 @@ def train_clip_heatmap():
     val_pairs = [pairs[i] for i in val_idx]
     test_pairs = [pairs[i] for i in test_idx]
 
-    train_ds = ClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=True, pairs=train_pairs)
-    val_ds = ClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=False, pairs=val_pairs)
-    test_ds = ClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=False, pairs=test_pairs)
+    train_ds = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=True, pairs=train_pairs)
+    val_ds = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=False, pairs=val_pairs)
+    test_ds = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=False, pairs=test_pairs)
 
     # Save a few augmented previews to verify transforms
     try:
@@ -491,16 +493,16 @@ def train_clip_heatmap():
             # Draw points if provided
             for (x, y) in sample['gt_points']:
                 cv2.circle(overlay, (int(x), int(y)), 3, (255, 255, 255), -1)
-            cv2.imwrite(os.path.join(config['output_dir'], f'aug_preview_{i}.png'), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
-        print(f"Saved augmentation previews to {config['output_dir']}/aug_preview_*.png")
+            cv2.imwrite(os.path.join(config['output_dir'], f'meta_clip_aug_preview_{i}.png'), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+        print(f"Saved Meta CLIP augmentation previews to {config['output_dir']}/meta_clip_aug_preview_*.png")
     except Exception as e:
-        print(f"Augmentation preview failed: {e}")
+        print(f"Meta CLIP augmentation preview failed: {e}")
 
-    train_loader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, num_workers=0, collate_fn=collate_clip_batch)
-    val_loader = DataLoader(val_ds, batch_size=config['batch_size'], shuffle=False, num_workers=0, collate_fn=collate_clip_batch)
-    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_clip_batch)
+    train_loader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, num_workers=0, collate_fn=collate_meta_clip_batch)
+    val_loader = DataLoader(val_ds, batch_size=config['batch_size'], shuffle=False, num_workers=0, collate_fn=collate_meta_clip_batch)
+    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_meta_clip_batch)
 
-    # Model
+    # Model - using Meta CLIP
     model = create_clip_heatmap_model(
         model_name=config['model_name'],
         image_size=config['image_size'],
@@ -510,6 +512,7 @@ def train_clip_heatmap():
         lora_dropout=config['lora_dropout'],
         use_text_prior=config['use_text_prior'],
         prior_prompts=config['prior_prompts'],
+        negative_prompts=config['negative_prompts'],
         prior_weight=config['prior_weight']
     ).to(device)
 
@@ -606,11 +609,7 @@ def train_clip_heatmap():
                 k = int(6 * sigma + 1)
                 k = k if k % 2 == 1 else k + 1
                 gt_blur = batch_gaussian_blur(gt, kernel_size=min(k, 61), sigma=float(sigma))
-                vloss = kl_heatmap_loss(
-                    pred, gt_blur, reduction='mean',
-                    keypoint_count_weight=config.get('keypoint_count_weight', 0.1),
-                    max_keypoints=config.get('max_keypoints', 4)
-                )
+                vloss = kl_heatmap_loss(pred, gt_blur, reduction='mean')
                 val_running += float(vloss.item()) * pix.size(0)
 
         val_loss = val_running / len(val_loader.dataset)
@@ -633,46 +632,21 @@ def train_clip_heatmap():
                 # Save adapters from the CLIP PEFT wrapper
                 model.clip.save_pretrained(config['output_dir'])
             torch.save(model.head.state_dict(), os.path.join(config['output_dir'], 'head.pth'))
-            print(f"Saved best model (val={best_val:.4f}) to {config['output_dir']}")
+            print(f"Saved best Meta CLIP model (val={best_val:.4f}) to {config['output_dir']}")
         else:
             patience += 1
             if patience >= config['early_stopping_patience']:
                 print("Early stopping triggered")
                 break
 
-    print("Training complete.")
+    print("Meta CLIP training complete.")
     if writer is not None:
         writer.close()
 
     # --- Evaluation on test set with best checkpoint ---
-    from peft import PeftModel
     with torch.no_grad():
-        # Rebuild model for best weights
-        eval_model = ClipHeatmapModel(
-            model_name=config['model_name'],
-            image_size=config['image_size'],
-            use_lora=config['use_lora'],
-            lora_r=config['lora_r'],
-            lora_alpha=config['lora_alpha'],
-            lora_dropout=config['lora_dropout'],
-            use_text_prior=config['use_text_prior'],
-            prior_prompts=config['prior_prompts'],
-            prior_weight=config['prior_weight']
-        ).to(device)
-        # Load adapters
-        if config['use_lora'] and PEFT_AVAILABLE and os.path.exists(os.path.join(config['output_dir'], 'adapter_config.json')):
-            try:
-                base = CLIPModel.from_pretrained(config['model_name'])
-                base = PeftModel.from_pretrained(base, config['output_dir'])
-                base = base.to(device)  # Move to device
-                eval_model.clip = base
-                eval_model.vision = base.get_submodule('vision_model')
-            except Exception as e:
-                print(f"Warning: failed to load adapters for eval: {e}")
-        # Load head
-        head_path = os.path.join(config['output_dir'], 'head.pth')
-        if os.path.exists(head_path):
-            eval_model.head.load_state_dict(torch.load(head_path, map_location=device))
+        # Use the already trained model (it already has the best weights loaded)
+        eval_model = model
         eval_model.eval()
 
         # Prepare results dir
@@ -737,7 +711,7 @@ def train_clip_heatmap():
                 cv2.circle(vis, (int(x), int(y)), 3, (0, 255, 0), -1)
             for (pxx, pyy) in peaks_xy:
                 cv2.circle(vis, (int(pxx), int(pyy)), 3, (255, 0, 0), -1)
-            cv2.imwrite(str(results_dir / f"{image_id}_clip_heatmap.png"), cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(str(results_dir / f"{image_id}_meta_clip_heatmap.png"), cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
 
             detailed.append({
                 'image': f"{image_id}.png",
@@ -754,10 +728,10 @@ def train_clip_heatmap():
             'samples': len(detailed),
             'details': detailed,
         }
-        with open(results_dir / 'evaluation_results.json', 'w') as f:
+        with open(results_dir / 'meta_clip_evaluation_results.json', 'w') as f:
             json.dump(summary, f, indent=2)
-        print(f"Saved test evaluation to {results_dir}/evaluation_results.json")
+        print(f"Saved Meta CLIP test evaluation to {results_dir}/meta_clip_evaluation_results.json")
 
 
 if __name__ == '__main__':
-    train_clip_heatmap()
+    train_meta_clip_heatmap()
