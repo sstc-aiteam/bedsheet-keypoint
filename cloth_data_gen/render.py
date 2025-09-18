@@ -103,34 +103,62 @@ def create_realistic_material(obj, material_type="cotton"):
             (0.8, 0.9, 1.0, 1.0),   # Light blue
             (1.0, 0.9, 0.8, 1.0),   # Cream
         ])
-        roughness = 0.8
-        specular = 0.1
+        roughness = 0.6  # Less rough for better edge definition
+        specular = 0.3   # Higher specular for better edge visibility
+        metallic = 0.0   # Non-metallic
+        transmission = 0.0  # No transmission
+        emission_strength = 0.0  # No emission
     elif material_type == "linen":
         base_color = random.choice([
             (0.95, 0.9, 0.8, 1.0),  # Linen
             (0.9, 0.85, 0.7, 1.0),  # Beige
             (0.8, 0.9, 0.8, 1.0),   # Light green
         ])
-        roughness = 0.9
-        specular = 0.05
+        roughness = 0.7  # Less rough for better edge definition
+        specular = 0.25  # Higher specular for better edge visibility
+        metallic = 0.0   # Non-metallic
+        transmission = 0.0  # No transmission
+        emission_strength = 0.0  # No emission
     else:  # silk
         base_color = random.choice([
             (1.0, 0.8, 0.8, 1.0),   # Pink
             (0.8, 0.8, 1.0, 1.0),   # Light purple
             (0.9, 1.0, 0.8, 1.0),   # Light green
         ])
-        roughness = 0.3
-        specular = 0.3
+        roughness = 0.1  # Very smooth for better edge definition
+        specular = 0.5   # High specular for better edge visibility
+        metallic = 0.0   # Non-metallic
+        transmission = 0.0  # No transmission
+        emission_strength = 0.0  # No emission
     
     # Set material properties for better crease visibility
     bsdf.inputs["Base Color"].default_value = base_color
     bsdf.inputs["Roughness"].default_value = roughness
     bsdf.inputs["Specular IOR Level"].default_value = specular
+    bsdf.inputs["Metallic"].default_value = metallic
+    bsdf.inputs["Transmission Weight"].default_value = transmission
+    bsdf.inputs["Emission Strength"].default_value = emission_strength
     
-    # Improve material for better shadow detail visibility
-    bsdf.inputs["Metallic"].default_value = 0.0  # Non-metallic
-    bsdf.inputs["Transmission Weight"].default_value = 0.0  # Opaque
-    bsdf.inputs["Emission Strength"].default_value = 0.0  # No emission
+    # Add a normal map for better edge definition
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    
+    # Create a noise texture for normal mapping
+    noise_tex = nodes.new(type='ShaderNodeTexNoise')
+    noise_tex.inputs["Scale"].default_value = 50.0  # Fine detail
+    noise_tex.inputs["Detail"].default_value = 15.0  # High detail
+    noise_tex.inputs["Roughness"].default_value = 0.5
+    noise_tex.inputs["Distortion"].default_value = 0.0
+    
+    # Create a normal map node
+    normal_map = nodes.new(type='ShaderNodeNormalMap')
+    normal_map.inputs["Strength"].default_value = 0.3  # Subtle normal mapping
+    
+    # Connect noise to normal map
+    links.new(noise_tex.outputs["Fac"], normal_map.inputs["Color"])
+    
+    # Connect normal map to BSDF
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
     bsdf.inputs["Alpha"].default_value = 1.0  # Fully opaque
     
     # Add slight subsurface scattering for more realistic fabric appearance
@@ -150,73 +178,73 @@ def setup_lighting():
         if obj.type == 'LIGHT':
             bpy.data.objects.remove(obj, do_unlink=True)
     
-    # Primary very bright overhead light (main light source - much brighter for visibility)
+    # Primary overhead light (main light source - enhanced for better edge definition)
     bpy.ops.object.light_add(type='AREA', location=(0, 0, 4))
     main_light = bpy.context.active_object
     main_light.name = "Main Overhead Light"
-    main_light.data.energy = 15.0  # Much brighter for better visibility
+    main_light.data.energy = 10.0  # Increased for better contrast
     main_light.data.color = (1.0, 0.98, 0.95)  # Warm daylight
-    main_light.data.size = 5.0  # Much larger for very soft shadows
+    main_light.data.size = 2.5  # Smaller for sharper shadows
     main_light.rotation_euler = Euler((0.0, 0.0, 0.0), 'XYZ')  # Pointing straight down
     
     # Secondary angled light (creates varied shadows on bedsheet surface)
     bpy.ops.object.light_add(type='AREA', location=(1.5, 1.5, 3.5))
     secondary_light = bpy.context.active_object
     secondary_light.name = "Secondary Light"
-    secondary_light.data.energy = 8.0  # Much brighter for better fill
+    secondary_light.data.energy = 5.0  # Increased for better edge definition
     secondary_light.data.color = (0.98, 1.0, 0.95)  # Slightly different color
-    secondary_light.data.size = 4.0  # Much larger for softer shadows
+    secondary_light.data.size = 2.0  # Smaller for sharper shadows
     secondary_light.rotation_euler = Euler((0.2, 0.3, 0.0), 'XYZ')  # Angled
     
     # Accent light from different angle (adds more shadow complexity)
     bpy.ops.object.light_add(type='AREA', location=(-1.2, 1.8, 3.2))
     accent_light = bpy.context.active_object
     accent_light.name = "Accent Light"
-    accent_light.data.energy = 6.0  # Much brighter for better fill
+    accent_light.data.energy = 3.0  # Reduced for more dramatic shadows
     accent_light.data.color = (0.95, 0.95, 1.0)  # Slightly cool
-    accent_light.data.size = 3.5  # Much larger for softer lighting
+    accent_light.data.size = 2.0  # Smaller for more defined shadows
     accent_light.rotation_euler = Euler((0.1, -0.4, 0.0), 'XYZ')  # Different angle
     
-    # Additional fill light from opposite side (reduces black shadow areas)
+    # Additional fill light from opposite side (minimal to preserve shadows)
     bpy.ops.object.light_add(type='AREA', location=(2, -1.5, 3))
     fill_light2 = bpy.context.active_object
     fill_light2.name = "Fill Light 2"
-    fill_light2.data.energy = 5.0  # Much brighter fill energy
+    fill_light2.data.energy = 1.5  # Much reduced to preserve shadow contrast
     fill_light2.data.color = (0.95, 0.98, 1.0)  # Cool fill
-    fill_light2.data.size = 4.0  # Much larger for soft fill
+    fill_light2.data.size = 2.0  # Smaller for more defined shadows
     fill_light2.rotation_euler = Euler((0.3, -0.2, 0.0), 'XYZ')
     
-    # Soft fill light (reduces harshness while preserving shadow variation)
+    # Soft fill light (minimal to preserve shadow variation)
     bpy.ops.object.light_add(type='AREA', location=(0, -2, 2.5))
     fill_light = bpy.context.active_object
     fill_light.name = "Fill Light"
-    fill_light.data.energy = 4.0  # Much brighter fill
+    fill_light.data.energy = 1.0  # Much reduced to preserve shadows
     fill_light.data.color = (0.9, 0.95, 1.0)  # Cool fill
-    fill_light.data.size = 5.0  # Much larger for softer fill
+    fill_light.data.size = 2.5  # Smaller for more defined shadows
     fill_light.rotation_euler = Euler((0.4, 0.0, 0.0), 'XYZ')
     
     # Additional side fill lights to eliminate black areas
     bpy.ops.object.light_add(type='AREA', location=(-2, 0, 3))
     side_fill1 = bpy.context.active_object
     side_fill1.name = "Side Fill 1"
-    side_fill1.data.energy = 4.0
+    side_fill1.data.energy = 1.0  # Reduced for more dramatic shadows
     side_fill1.data.color = (0.95, 0.95, 1.0)
-    side_fill1.data.size = 4.0
+    side_fill1.data.size = 2.0  # Smaller for more defined shadows
     side_fill1.rotation_euler = Euler((0.2, 0.0, 0.0), 'XYZ')
     
     bpy.ops.object.light_add(type='AREA', location=(0, 2, 3))
     side_fill2 = bpy.context.active_object
     side_fill2.name = "Side Fill 2"
-    side_fill2.data.energy = 4.0
+    side_fill2.data.energy = 1.0  # Reduced for more dramatic shadows
     side_fill2.data.color = (0.95, 0.95, 1.0)
-    side_fill2.data.size = 4.0
+    side_fill2.data.size = 2.0  # Smaller for more defined shadows
     side_fill2.rotation_euler = Euler((0.2, 0.0, 0.0), 'XYZ')
     
-    # Very strong ambient light (fills dark areas and shows crease detail)
+    # Minimal ambient light (preserves shadow detail)
     bpy.ops.object.light_add(type='AREA', location=(0, 0, 1))
     ambient_light = bpy.context.active_object
     ambient_light.name = "Ambient Light"
-    ambient_light.data.energy = 3.0  # Much brighter ambient for detail visibility
+    ambient_light.data.energy = 0.8  # Much reduced to preserve shadow contrast
     ambient_light.data.color = (0.9, 0.92, 0.95)
     ambient_light.data.size = 8.0  # Very large for even ambient lighting
     ambient_light.rotation_euler = Euler((1.57, 0.0, 0.0), 'XYZ')  # Pointing up

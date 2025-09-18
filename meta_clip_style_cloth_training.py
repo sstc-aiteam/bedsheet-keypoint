@@ -76,13 +76,15 @@ def load_cloth_keypoints(keypoint_file: str) -> List[Dict]:
     try:
         with open(keypoint_file, 'r') as f:
             lines = f.readlines()
-        for line in lines[1:]:
+        for line in lines:
             line = line.strip()
             if line and ',' in line:
                 parts = line.split(',')
-                if len(parts) >= 5:
-                    x_pixel, y_pixel = float(parts[3]), float(parts[4])
-                    keypoints.append({'x': x_pixel, 'y': y_pixel})
+                if len(parts) >= 2:
+                    x_pixel, y_pixel = float(parts[0]), float(parts[1])
+                    # Only add keypoints that are visible (not -1, -1)
+                    if x_pixel >= 0 and y_pixel >= 0:
+                        keypoints.append({'x': x_pixel, 'y': y_pixel})
     except Exception as e:
         print(f"Error loading keypoints from {keypoint_file}: {e}")
     return keypoints
@@ -159,8 +161,8 @@ class MetaClipClothHeatmapDataset(Dataset):
         self.augment = augment
 
         if pairs is None:
-            images = sorted(list((self.data_dir / 'images').glob('*.png')) +
-                            list((self.data_dir / 'images').glob('*.jpg')))
+            images = sorted(list((self.data_dir / 'imgs').glob('*.png')) +
+                            list((self.data_dir / 'imgs').glob('*.jpg')))
             if max_samples:
                 images = images[:max_samples]
             pairs = []
@@ -412,12 +414,12 @@ def train_meta_clip_heatmap():
     # Meta CLIP model configuration
     config = {
         'model_name': 'facebook/metaclip-b16-fullcc2.5b',  # Meta CLIP model
-        'data_dir': 'cloth_data_gen/output',
+        'data_dir': 'cloth_data_gen/bedsheet_dataset_3000',
         'output_dir': 'models/meta_clip_style_cloth',
         'image_size': 256,
         'auto_image_size': True,
         'batch_size': 4,
-        'num_epochs': 10,
+        'num_epochs': 20,  # Increased epochs for larger dataset
         'learning_rate': 3e-4,
         'weight_decay': 1e-4,
         'use_fp16': True,
@@ -441,8 +443,8 @@ def train_meta_clip_heatmap():
             "fabric center area"
         ],
         'prior_weight': 0.5,
-        'max_samples': None,
-        'early_stopping_patience': 10,
+        'max_samples': None,  # Use all 3000 samples
+        'early_stopping_patience': 15,  # Increased patience for longer training
         'splits': {'train': 0.8, 'val': 0.1, 'test': 0.1},
         'results_dir': 'results_meta_clip',
     }

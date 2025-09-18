@@ -1,0 +1,5 @@
+---
+description: try to use traditional chinese in comments and documentations
+globs:
+alwaysApply: true
+---

@@ -600,8 +600,8 @@ class EnhancedWarpBedsheetSimulator:
         self.dt = 0.02  # 50 FPS - faster timestep for speed
         self.gravity = wp.vec3(0.0, 0.0, -9.81)
         self.damping = 0.95  # Less damping for more dynamic motion
-        self.stiffness = 0.999  # Very high stiffness to prevent stretching (increased)
-        self.bend_stiffness = 0.05  # Low bend stiffness for soft draping
+        self.stiffness = 0.6  # Lower stiffness for softer, more natural draping
+        self.bend_stiffness = 0.03  # Lower bend stiffness for softer draping
         
         # Ground collision
         self.ground_height = 0.0
@@ -618,13 +618,13 @@ class EnhancedWarpBedsheetSimulator:
         self.linear_damping = 0.95  # Linear velocity damping
         self.angular_damping = 0.98  # Angular velocity damping
         
-        # Moderate wind parameters from all sides
+        # Moderate wind parameters from all sides (stable)
         self.base_wind_velocity = wp.vec3(
-            random.uniform(-4.0, 4.0),  # Moderate wind from all X directions
-            random.uniform(-4.0, 4.0),  # Moderate wind from all Y directions
-            random.uniform(-1.5, 1.5)   # Moderate vertical wind component
+            random.uniform(-5.0, 5.0),  # Moderate wind from all X directions
+            random.uniform(-5.0, 5.0),  # Moderate wind from all Y directions
+            random.uniform(-2.0, 2.0)   # Moderate vertical wind component
         )
-        self.wind_strength = random.uniform(3.0, 6.0)  # Moderate wind strength
+        self.wind_strength = random.uniform(4.0, 8.0)  # Moderate wind strength
         self.wind_radius = random.uniform(2.5, 4.0)  # Moderate wind field size
         self.wind_center = wp.vec3(
             random.uniform(-2.0, 2.0),
@@ -633,17 +633,17 @@ class EnhancedWarpBedsheetSimulator:
         )
         
         # Moderate wind noise parameters for natural variation
-        self.wind_noise_scale = random.uniform(1.0, 2.0)  # Moderate frequency noise
-        self.wind_noise_strength = random.uniform(1.5, 3.0)  # Moderate noise amplitude
-        self.wind_turbulence = random.uniform(0.8, 1.5)  # Moderate turbulence for natural motion
+        self.wind_noise_scale = random.uniform(1.5, 3.0)  # Moderate frequency noise
+        self.wind_noise_strength = random.uniform(2.0, 4.0)  # Moderate noise amplitude
+        self.wind_turbulence = random.uniform(1.0, 2.0)  # Moderate turbulence for natural motion
         
         # Moderate side wind parameters for lateral forces from all sides
-        self.side_wind_strength = random.uniform(2.0, 4.0)  # Moderate side wind
+        self.side_wind_strength = random.uniform(2.0, 5.0)  # Moderate side wind
         self.side_wind_direction = random.uniform(0, 2 * np.pi)  # Random initial direction
-        self.wind_rotation_speed = random.uniform(0.5, 1.0)  # Moderate wind rotation
+        self.wind_rotation_speed = random.uniform(0.5, 1.5)  # Moderate wind rotation
         
         # Moderate omnidirectional wind parameters for natural variation from all sides
-        self.omnidirectional_wind_strength = random.uniform(3.0, 6.0)  # Moderate omnidirectional wind
+        self.omnidirectional_wind_strength = random.uniform(3.0, 7.0)  # Moderate omnidirectional wind
         
         # Multiple moderate wind sources from all directions
         self.num_wind_sources = random.randint(2, 4)  # 2-4 wind sources for natural variation
@@ -655,10 +655,10 @@ class EnhancedWarpBedsheetSimulator:
                     random.uniform(-2.5, 2.5),
                     random.uniform(1.0, 3.0)  # Moderate wind source height
                 ),
-                'strength': random.uniform(2.0, 5.0),  # Moderate wind sources
+                'strength': random.uniform(2.0, 6.0),  # Moderate wind sources
                 'radius': random.uniform(1.5, 3.0),  # Moderate wind fields
                 'direction': random.uniform(0, 2 * np.pi),
-                'rotation_speed': random.uniform(0.2, 0.8)  # Moderate rotation
+                'rotation_speed': random.uniform(0.3, 1.0)  # Moderate rotation
             }
             self.wind_sources.append(wind_source)
         
@@ -667,8 +667,8 @@ class EnhancedWarpBedsheetSimulator:
         self.velocity_threshold = 0.1  # 0.1 m/s
         self.landing_percentage_threshold = 0.8  # 80% of particles must land
         
-        # Bedsheet thickness
-        self.thickness = 0.002  # 2mm thickness for realistic bedsheet
+        # Bedsheet thickness - increased to 5mm for better edge visibility
+        self.thickness = 0.005  # 5mm thickness for better edge visibility
         
         # Initialize arrays
         self._setup_arrays()
@@ -720,19 +720,15 @@ class EnhancedWarpBedsheetSimulator:
                     start_height
                 ]
         
-        # Pin corner particles (set inv_mass to 0) - but only initially
-        # We'll release them after a few frames for more natural motion
-        corner_indices = [0, self.ny-1, (self.nx-1)*self.ny, (self.nx-1)*self.ny + self.ny-1]
-        for idx in corner_indices:
-            inv_mass_host[idx] = 0.0
+        # No corner pinning - let all particles move freely from the start
+        # This creates more natural, fluid motion without sudden releases
         
         # Copy to GPU
         self.x = wp.from_numpy(x_host, dtype=wp.vec3)
         self.inv_mass = wp.from_numpy(inv_mass_host, dtype=float)
         
-        # Track when to release corners
-        self.corner_release_frame = random.randint(30, 60)
-        self.corners_released = False
+        # No corner release needed since corners are never pinned
+        self.corners_released = True
     
     def _setup_constraints(self):
         """Setup distance and bending constraints"""
@@ -803,16 +799,7 @@ class EnhancedWarpBedsheetSimulator:
     
     def step(self, frame):
         """Perform one simulation step"""
-        # Release corners after specified frame for more natural motion
-        if frame >= self.corner_release_frame and not self.corners_released:
-            # Release corner particles by setting their inverse mass to normal value
-            corner_indices = [0, self.ny-1, (self.nx-1)*self.ny, (self.nx-1)*self.ny + self.ny-1]
-            inv_mass_host = self.inv_mass.numpy()
-            for idx in corner_indices:
-                inv_mass_host[idx] = 1.0
-            self.inv_mass = wp.from_numpy(inv_mass_host, dtype=float)
-            self.corners_released = True
-            print(f"  Released corner particles at frame {frame}")
+        # No corner pinning/release logic needed - all particles move freely from start
         
         # Clear forces
         wp.launch(kernel=clear_forces, dim=self.num_particles, inputs=[self.f], device=self.x.device)
@@ -880,14 +867,14 @@ class EnhancedWarpBedsheetSimulator:
             device=self.x.device
         )
         
-        # Apply constraints (more iterations to prevent stretching with higher stiffness)
-        for _ in range(10):  # Increased iterations for non-stretchable behavior
+        # Apply constraints (fewer iterations for softer cloth)
+        for _ in range(6):  # Fewer iterations for softer stiffness 0.6
             wp.launch(
                 kernel=apply_distance_constraints,
                 dim=self.num_constraints,
                 inputs=[self.x, self.inv_mass, self.constraint_count, 
                        self.constraint_indices, self.constraint_rest_lengths, 
-                       self.stiffness, 10],  # More constraint iterations per step
+                       self.stiffness, 6],  # Fewer constraint iterations per step
                 device=self.x.device
             )
         

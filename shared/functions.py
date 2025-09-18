@@ -49,6 +49,60 @@ def thresholded_locations(data_2d, threshold):
         centroids.append(centroid)
     return centroids
 
+def combine_nearby_peaks(peaks, distance_threshold=10):
+    """
+    Combine nearby peaks into single keypoints using clustering.
+    
+    Args:
+        peaks: List of peak coordinates [[y1, x1], [y2, x2], ...]
+        distance_threshold: Maximum distance to consider peaks as part of same cluster
+    
+    Returns:
+        List of combined peak coordinates
+    """
+    if not peaks:
+        return []
+    
+    # Convert to numpy array for easier manipulation
+    peaks = np.array(peaks)
+    
+    # If only one peak, return it
+    if len(peaks) == 1:
+        return peaks.tolist()
+    
+    # Calculate pairwise distances
+    from scipy.spatial.distance import pdist, squareform
+    distances = squareform(pdist(peaks))
+    
+    # Create clusters
+    clusters = []
+    used = set()
+    
+    for i in range(len(peaks)):
+        if i in used:
+            continue
+            
+        # Start a new cluster
+        cluster = [i]
+        used.add(i)
+        
+        # Find all peaks within distance_threshold
+        for j in range(i + 1, len(peaks)):
+            if j not in used and distances[i, j] <= distance_threshold:
+                cluster.append(j)
+                used.add(j)
+        
+        clusters.append(cluster)
+    
+    # Calculate centroid for each cluster
+    combined_peaks = []
+    for cluster in clusters:
+        cluster_peaks = peaks[cluster]
+        centroid = cluster_peaks.mean(axis=0)
+        combined_peaks.append(centroid)
+    
+    return combined_peaks
+
 def extract_mask_compare(image, yolo_model_finetuned, allowed_classes):
     # image_name = os.path.basename(image_path)
     # 推論
