@@ -1,4 +1,4 @@
-# 床單摺疊機器人 - 關鍵點檢測系統
+ i# 床單摺疊機器人 - 關鍵點檢測系統
 
 一個使用深度學習和電腦視覺技術的床單摺疊機器人關鍵點檢測系統，整合了先進的 Meta CLIP 模型和合成數據生成技術。
 
@@ -413,10 +413,6 @@ python test_tensorrt_inference.py \
     --pytorch_model models/meta_clip_style_bedsheet_post \
     --tensorrt_model models/meta_clip_style_bedsheet_post.trt
 ```
-
-## 📄 授權
-
-本專案採用 MIT 授權條款 - 詳見 LICENSE 檔案。
 
 ## 🙏 致謝
 
