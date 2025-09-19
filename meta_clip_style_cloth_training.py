@@ -455,35 +455,37 @@ def train_meta_clip_heatmap():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Build full list of pairs for deterministic split
-    scan_ds = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], config['max_samples'], augment=False)
-    pairs = scan_ds.pairs
-    rng = np.random.RandomState(42)
-    idx = np.arange(len(pairs))
-    rng.shuffle(idx)
-    n = len(idx)
-    n_train = int(config['splits']['train'] * n)
-    n_val = int(config['splits']['val'] * n)
-    n_test = n - n_train - n_val
-    train_idx = idx[:n_train]
-    val_idx = idx[n_train:n_train + n_val]
-    test_idx = idx[n_train + n_val:]
-
-    train_pairs = [pairs[i] for i in train_idx]
-    val_pairs = [pairs[i] for i in val_idx]
-    test_pairs = [pairs[i] for i in test_idx]
-
-    train_ds = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=True, pairs=train_pairs)
-    val_ds = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=False, pairs=val_pairs)
-    test_ds = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], augment=False, pairs=test_pairs)
+    # Create base dataset without augmentation
+    base_dataset = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], config['max_samples'], augment=False)
+    
+    # Split dataset into train, validation, and test using PyTorch's random_split
+    total_size = len(base_dataset)
+    train_size = int(config['splits']['train'] * total_size)
+    val_size = int(config['splits']['val'] * total_size)
+    test_size = total_size - train_size - val_size
+    
+    train_indices, val_indices, test_indices = torch.utils.data.random_split(
+        range(total_size), [train_size, val_size, test_size],
+        generator=torch.Generator().manual_seed(42)
+    )
+    
+    # Create datasets with proper splitting
+    train_dataset = MetaClipClothHeatmapDataset(config['data_dir'], config['image_size'], config['max_samples'], augment=True)
+    
+    # Create proper subsets using torch.utils.data.Subset
+    train_subset = torch.utils.data.Subset(train_dataset, train_indices.indices)
+    val_subset = torch.utils.data.Subset(base_dataset, val_indices.indices)
+    test_subset = torch.utils.data.Subset(base_dataset, test_indices.indices)
+    
+    print(f"Dataset split: Train={len(train_indices)}, Val={len(val_indices)}, Test={len(test_indices)}")
 
     # Save a few augmented previews to verify transforms
     try:
         os.makedirs(config['output_dir'], exist_ok=True)
         mean = np.array([0.48145466, 0.4578275, 0.40821073]).reshape(1, 1, 3)
         std = np.array([0.26862954, 0.26130258, 0.27577711]).reshape(1, 1, 3)
-        for i in range(min(3, len(train_ds))):
-            sample = train_ds[i]
+        for i in range(min(3, len(train_subset))):
+            sample = train_subset[i]
             img = sample['pixel_values'].permute(1, 2, 0).numpy()  # HWC in CLIP norm
             img = (img * std + mean).clip(0, 1)
             img = (img * 255).astype(np.uint8)
@@ -500,9 +502,10 @@ def train_meta_clip_heatmap():
     except Exception as e:
         print(f"Meta CLIP augmentation preview failed: {e}")
 
-    train_loader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, num_workers=0, collate_fn=collate_meta_clip_batch)
-    val_loader = DataLoader(val_ds, batch_size=config['batch_size'], shuffle=False, num_workers=0, collate_fn=collate_meta_clip_batch)
-    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_meta_clip_batch)
+    # Create data loaders with proper subsets
+    train_loader = DataLoader(train_subset, batch_size=config['batch_size'], shuffle=True, num_workers=0, collate_fn=collate_meta_clip_batch)
+    val_loader = DataLoader(val_subset, batch_size=config['batch_size'], shuffle=False, num_workers=0, collate_fn=collate_meta_clip_batch)
+    test_loader = DataLoader(test_subset, batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_meta_clip_batch)
 
     # Model - using Meta CLIP
     model = create_clip_heatmap_model(
@@ -629,7 +632,10 @@ def train_meta_clip_heatmap():
         if val_loss < best_val:
             best_val = val_loss
             patience = 0
-            # Save LoRA adapters (if used) and head weights
+            # Save complete model state (includes all trainable parameters)
+            torch.save(model.state_dict(), os.path.join(config['output_dir'], 'complete_model.pth'))
+            
+            # Also save LoRA adapters (if used) and head weights separately for compatibility
             if config['use_lora'] and PEFT_AVAILABLE:
                 # Save adapters from the CLIP PEFT wrapper
                 model.clip.save_pretrained(config['output_dir'])

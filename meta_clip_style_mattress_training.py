@@ -2,9 +2,9 @@
 """
 Post-Processing Meta CLIP-Style Keypoint Detection Model Training
 
-This script implements post-training for the Meta CLIP heatmap model using bedsheet data.
+This script implements post-training for the Meta CLIP heatmap model using mattress data.
 It loads the pre-trained Meta CLIP model from cloth data and applies additional LoRA fine-tuning
-on real bedsheet images with keypoint annotations.
+on real mattress images with keypoint annotations.
 """
 
 import os
@@ -50,22 +50,20 @@ except ImportError:
 DEFAULT_CONFIG = {
     # Model configuration
     "model_name": "facebook/metaclip-b16-fullcc2.5b",  # Meta CLIP model
-    "pretrained_model_path": "models/meta_clip_style_cloth",  # Path to pre-trained Meta CLIP model
     "use_original_metaclip": False,  # Set to True to use original Meta CLIP instead of pre-trained
     "ensure_equal_params": True,  # Ensure both models have identical trainable parameters
-    "output_dir": "models/meta_clip_style_bedsheet_post",
-    "results_dir": "results_meta_clip_bedsheet_post",
+    "output_dir": "models/meta_clip_style_mattress_post",
+    "results_dir": "results_meta_clip_mattress_post",
     
     # Data configuration
     "keypoints_data_srcs": [
-        "via_proj/bedsheets"
+        "via_proj/mattress"
     ],
     "image_paths": [
-        "image_data/RGB-images",
-        "image_data/RGB-images2"
+        "image_data/mattress1"
     ],
     "yolo_model_path": "models/yolo_finetuned/best.pt",
-    "allowed_classes": [2],  # bedsheet class
+    "allowed_classes": [0,1,2],  # mattress class
     "image_size": 256,
     
     # Training configuration
@@ -82,12 +80,9 @@ DEFAULT_CONFIG = {
     # Text prior configuration
     "use_text_prior": True,
     "prior_prompts": [
-        "a photo of a bedsheet corner",
-        "bedsheet corner point",
-        "sharp bedsheet corner",
-        "textile edge corner",
-        "fabric fold corner",
-        "bedsheet seam corner"
+        "a photo of a mattress corner",
+        "mattress corner point",
+        "sharp mattress corner"
     ],
     "negative_prompts": [
         "smooth bedsheet surface",
@@ -132,7 +127,7 @@ def compute_sigma(H):
     return max(1.0, 0.03 * H)
 
 class BedsheetKeypointDataset(Dataset):
-    """Dataset for bedsheet keypoint detection with Meta CLIP normalization."""
+    """Dataset for mattress keypoint detection with Meta CLIP normalization."""
     
     def __init__(self, img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes, 
                  image_size=256, transform=None):
@@ -178,7 +173,7 @@ class BedsheetKeypointDataset(Dataset):
         }
 
 class BedsheetAugmentation:
-    """Augmentation for bedsheet keypoint detection."""
+    """Augmentation for mattress keypoint detection."""
     
     def __init__(self, image_size=256):
         self.image_size = image_size
@@ -216,14 +211,14 @@ class BedsheetAugmentation:
         return img_tensor, keypoints_tensor
 
 def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model, allowed_classes, image_size):
-    """Generate bedsheet dataset data with YOLO masking."""
+    """Generate mattress dataset data with YOLO masking."""
     img_arr = []
     rgb_img_arr = []
     keypoints_img_arr = []
     file_paths = []
     original_sizes = []
     
-    print("Loading bedsheet data...")
+    print("Loading mattress data...")
     
     for keypoints_src in keypoints_data_srcs:
         if not os.path.exists(keypoints_src):
@@ -283,7 +278,7 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                         # Run YOLO inference on resized image
                         results = yolo_model(img_resized, task="segment")
                         if len(results) > 0 and results[0].masks is not None:
-                            # Create mask for bedsheet regions
+                            # Create mask for mattress regions
                             mask_all = np.zeros((image_size, image_size), dtype=np.uint8)
                             masks = results[0].masks.data.cpu().numpy()
                             classes = results[0].boxes.cls.cpu().numpy()
@@ -294,7 +289,7 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                                     mask = cv2.resize(mask, (image_size, image_size), interpolation=cv2.INTER_NEAREST)
                                     mask_all = cv2.bitwise_or(mask_all, (mask > 0.5).astype(np.uint8) * 255)
                             
-                            # Apply mask to image (set non-bedsheet regions to black)
+                            # Apply mask to image (set non-mattress regions to black)
                             if np.any(mask_all > 0):
                                 img_resized[mask_all == 0] = 0
                                 
@@ -315,7 +310,7 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                 file_paths.append(img_path)
                 original_sizes.append(original_size)
     
-    print(f"Loaded {len(img_arr)} bedsheet samples")
+    print(f"Loaded {len(img_arr)} mattress samples")
     return img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes
 
 def load_pretrained_meta_clip_model(config):
@@ -468,7 +463,7 @@ def load_pretrained_meta_clip_model(config):
         return model
 
 def train_meta_clip_post_model(model, train_loader, val_loader, config):
-    """Train Meta CLIP model on bedsheet data."""
+    """Train Meta CLIP model on mattress data."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     
@@ -764,12 +759,12 @@ def save_keypoint_visualization(image, pred_heatmap, gt_heatmap, pred_keypoints,
 def setup_model_directories(config: Dict[str, Any]) -> Dict[str, Any]:
     """Setup output directories based on model type (original vs pre-trained)."""
     if config.get('use_original_metaclip', False):
-        config['output_dir'] = "models/meta_clip_style_bedsheet_post_original"
-        config['results_dir'] = "results_meta_clip_bedsheet_post_original"
+        config['output_dir'] = "models/meta_clip_style_mattress_post_original"
+        config['results_dir'] = "results_meta_clip_mattress_post_original"
         print("Using original Meta CLIP model - output directories:")
     else:
-        config['output_dir'] = "models/meta_clip_style_bedsheet_post_pretrained"
-        config['results_dir'] = "results_meta_clip_bedsheet_post_pretrained"
+        config['output_dir'] = "models/meta_clip_style_mattress_post_pretrained"
+        config['results_dir'] = "results_meta_clip_mattress_post_pretrained"
         print("Using pre-trained Meta CLIP model - output directories:")
     
     print(f"  Output: {config['output_dir']}")
@@ -910,7 +905,7 @@ def compare_models_equal_params(config: Dict[str, Any]) -> bool:
 
 def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipHeatmapModel, Dict]:
     """
-    Main post-training pipeline for Meta CLIP model on bedsheet data.
+    Main post-training pipeline for Meta CLIP model on mattress data.
     
     Args:
         config: Configuration dictionary containing all training parameters
@@ -938,8 +933,8 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
         print(f"Warning: Could not load YOLO model: {e}")
         yolo_model_finetuned = None
     
-    # Generate bedsheet dataset
-    print("Generating bedsheet dataset...")
+    # Generate mattress dataset
+    print("Generating mattress dataset...")
     img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes = generate_bedsheet_dataset_data(
         config["keypoints_data_srcs"],
         config["image_paths"],
@@ -951,7 +946,7 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
     print(f"Bedsheet dataset generated: {len(img_arr)} samples")
     
     if len(img_arr) == 0:
-        raise ValueError("No bedsheet data found. Check your data paths and keypoint annotations.")
+        raise ValueError("No mattress data found. Check your data paths and keypoint annotations.")
     
     # Create base dataset without augmentation
     base_dataset = BedsheetKeypointDataset(

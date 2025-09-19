@@ -62,7 +62,7 @@ DEFAULT_CONFIG = {
     "yolo_model_path": "models/yolo_finetuned/best.pt",
     "keypoints_data_srcs": ["via_proj/via_project_22Aug2025_16h07m06s.json", "via_proj/via_project_01Sep2025_09h52m16s.json"],
     "image_paths": ["image_data/RGB-images/", "image_data/RGB-images2/"],
-    "allowed_classes": [1],
+    "allowed_classes": [2],
     "batch_size": 32,
     "learning_rate": 3e-5,
     "weight_decay": 5e-5,
