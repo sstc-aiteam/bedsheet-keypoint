@@ -343,7 +343,7 @@ from src.models import ClipHeatmapModel
 
 # 載入訓練模型
 model = ClipHeatmapModel(...)
-model.load_state_dict(torch.load("models/meta_clip_style_bedsheet_post/head.pth"))
+model.load_state_dict(torch.load("models/meta_clip_style_bedsheet_post/complete_model.pth"))
 model.eval()
 
 # 執行推理
