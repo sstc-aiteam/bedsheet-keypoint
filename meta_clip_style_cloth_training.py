@@ -661,6 +661,7 @@ def train_meta_clip_heatmap():
         results_dir = Path(config['results_dir'])
         results_dir.mkdir(parents=True, exist_ok=True)
 
+        from src.utils.keypoint_metrics import match_keypoints
         from shared.functions import thresholded_locations
 
         detailed = []
@@ -682,25 +683,8 @@ def train_meta_clip_heatmap():
             peaks = thresholded_locations(heat, threshold=0.3)
             peaks_xy = [(int(p[1]), int(p[0])) for p in peaks]
 
-            # Greedy matching
-            matched = 0
-            dists = []
-            used = set()
-            for (gx, gy) in gt_points:
-                best = None
-                best_d = 1e9
-                best_j = -1
-                for j, (pxx, pyy) in enumerate(peaks_xy):
-                    if j in used:
-                        continue
-                    d = ((gx - pxx) ** 2 + (gy - pyy) ** 2) ** 0.5
-                    if d < best_d:
-                        best_d, best, best_j = d, (pxx, pyy), j
-                if best is not None:
-                    used.add(best_j)
-                    dists.append(best_d)
-                    if best_d < 10.0:
-                        matched += 1
+            # Use streamlined matching function
+            matched, dists = match_keypoints(gt_points, peaks_xy, threshold=10.0)
 
             total_gt_points += len(gt_points)
             matched_total += matched

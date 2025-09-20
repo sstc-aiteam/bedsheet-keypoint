@@ -590,7 +590,7 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
     
     os.makedirs(results_dir, exist_ok=True)
     
-    from shared.functions import thresholded_locations, combine_nearby_peaks
+    from src.utils.keypoint_metrics import calculate_keypoint_match_rate
     
     detailed_results = []
     total_distances = []
@@ -631,26 +631,22 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             total_test_loss += test_loss.item()
             num_batches += 1
             
-            # Normalize heatmap
-            if pred_heatmap.max() > 0:
-                pred_heatmap = pred_heatmap / pred_heatmap.max()
-            
-            # Extract keypoints
-            peaks = thresholded_locations(pred_heatmap, threshold=0.3)
-            # Combine nearby peaks into single keypoints
-            combined_peaks = combine_nearby_peaks(peaks, distance_threshold=10)
-
-            pred_keypoints = [(int(p[1]), int(p[0])) for p in peaks]
-            
-            # Get ground truth keypoints
+            # Get ground truth heatmap
             gt_heatmap = keypoints[0, 0].cpu().numpy()
-            gt_peaks = thresholded_locations(gt_heatmap, threshold=0.5)
-            gt_keypoints = [(int(p[1]), int(p[0])) for p in gt_peaks]
             
-            # Compute matching
-            matched, distances = match_keypoints(gt_keypoints, pred_keypoints, threshold=10.0)
+            # Calculate match rate using streamlined function
+            match_result = calculate_keypoint_match_rate(
+                gt_heatmap, pred_heatmap,
+                gt_threshold=0.5, pred_threshold=0.3,
+                match_threshold=10.0, combine_distance=10.0
+            )
             
-            total_gt_points += len(gt_keypoints)
+            matched = match_result['matched_count']
+            distances = match_result['distances']
+            gt_keypoints = match_result['gt_keypoints']
+            pred_keypoints = match_result['pred_keypoints']
+            
+            total_gt_points += match_result['total_gt']
             matched_total += matched
             total_distances.extend(distances)
             
@@ -696,31 +692,6 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
     
     return results
 
-def match_keypoints(gt_keypoints, pred_keypoints, threshold=10.0):
-    """Match predicted keypoints to ground truth keypoints."""
-    matched = 0
-    distances = []
-    used_pred = set()
-    
-    for gt_kp in gt_keypoints:
-        best_dist = float('inf')
-        best_pred_idx = -1
-        
-        for i, pred_kp in enumerate(pred_keypoints):
-            if i in used_pred:
-                continue
-            
-            dist = np.sqrt((gt_kp[0] - pred_kp[0])**2 + (gt_kp[1] - pred_kp[1])**2)
-            if dist < best_dist:
-                best_dist = dist
-                best_pred_idx = i
-        
-        if best_pred_idx != -1 and best_dist < threshold:
-            matched += 1
-            used_pred.add(best_pred_idx)
-            distances.append(best_dist)
-    
-    return matched, distances
 
 def save_keypoint_visualization(image, pred_heatmap, gt_heatmap, pred_keypoints, gt_keypoints, save_path):
     """Save visualization of keypoint predictions."""
