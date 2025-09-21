@@ -423,16 +423,16 @@ def load_pretrained_meta_clip_model(config):
                 else:
                     print("✗ No LoRA adapter config found")
             
-            # Load head weights
-            head_path = os.path.join(pretrained_path, 'head.pth')
-            if os.path.exists(head_path):
+            # Load complete model weights (includes head)
+            complete_model_path = os.path.join(pretrained_path, 'complete_model.pth')
+            if os.path.exists(complete_model_path):
                 try:
-                    model.head.load_state_dict(torch.load(head_path, map_location='cpu'))
-                    print("✓ Loaded pre-trained head weights")
+                    model.load_state_dict(torch.load(complete_model_path, map_location='cpu'))
+                    print("✓ Loaded complete model weights from pretrained model")
                 except Exception as e:
-                    print(f"✗ Failed to load head weights: {e}")
+                    print(f"✗ Failed to load complete model weights: {e}")
             else:
-                print("✗ No head weights found")
+                print("✗ No complete model weights found")
         
         # Count actual trainable parameters
         actual_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -557,8 +557,6 @@ def train_meta_clip_post_model(model, train_loader, val_loader, config):
                 if config['use_lora']:
                     model.clip.save_pretrained(config['output_dir'])
                 
-                # Save head separately for backward compatibility
-                torch.save(model.head.state_dict(), os.path.join(config['output_dir'], 'head.pth'))
                 
                 # Save config
                 with open(os.path.join(config['output_dir'], 'training_config.json'), 'w') as f:

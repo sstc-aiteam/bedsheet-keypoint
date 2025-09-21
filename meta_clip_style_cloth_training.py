@@ -639,7 +639,6 @@ def train_meta_clip_heatmap():
             if config['use_lora'] and PEFT_AVAILABLE:
                 # Save adapters from the CLIP PEFT wrapper
                 model.clip.save_pretrained(config['output_dir'])
-            torch.save(model.head.state_dict(), os.path.join(config['output_dir'], 'head.pth'))
             print(f"Saved best Meta CLIP model (val={best_val:.4f}) to {config['output_dir']}")
         else:
             patience += 1
