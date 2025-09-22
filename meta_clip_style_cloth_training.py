@@ -173,9 +173,7 @@ class MetaClipClothHeatmapDataset(Dataset):
         self.pairs = pairs
         print(f"Dataset pairs: {len(self.pairs)} | augment={self.augment}")
 
-        # Meta CLIP normalization (same as CLIP for compatibility)
-        self.mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3, 1, 1)
-        self.std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3, 1, 1)
+        # No normalization - use raw pixel values
 
     def __len__(self):
         return len(self.pairs)
@@ -210,7 +208,6 @@ class MetaClipClothHeatmapDataset(Dataset):
 
         # To tensors
         img_t = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
-        img_t = (img_t - self.mean) / self.std
         heat_t = torch.from_numpy(heat).unsqueeze(0)  # (1,H,W)
 
         # Create sample dictionary
@@ -482,12 +479,9 @@ def train_meta_clip_heatmap():
     # Save a few augmented previews to verify transforms
     try:
         os.makedirs(config['output_dir'], exist_ok=True)
-        mean = np.array([0.48145466, 0.4578275, 0.40821073]).reshape(1, 1, 3)
-        std = np.array([0.26862954, 0.26130258, 0.27577711]).reshape(1, 1, 3)
         for i in range(min(3, len(train_subset))):
             sample = train_subset[i]
-            img = sample['pixel_values'].permute(1, 2, 0).numpy()  # HWC in CLIP norm
-            img = (img * std + mean).clip(0, 1)
+            img = sample['pixel_values'].permute(1, 2, 0).numpy()  # HWC
             img = (img * 255).astype(np.uint8)
             heat = sample['gt_heatmap'].squeeze(0).numpy()
             heat_u8 = (np.clip(heat / (heat.max() + 1e-6), 0, 1) * 255).astype(np.uint8)
@@ -691,10 +685,6 @@ def train_meta_clip_heatmap():
 
             # Overlay
             vis = pix.detach().cpu()[0]
-            # unnormalize CLIP
-            mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3, 1, 1)
-            std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3, 1, 1)
-            vis = (vis * std + mean).clamp(0, 1)
             vis = (vis.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
             # Ensure array is contiguous for OpenCV
             vis = np.ascontiguousarray(vis)

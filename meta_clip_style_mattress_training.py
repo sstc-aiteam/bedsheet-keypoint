@@ -139,9 +139,7 @@ class BedsheetKeypointDataset(Dataset):
         self.image_size = image_size
         self.transform = transform
         
-        # Meta CLIP normalization (same as CLIP for compatibility)
-        self.mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3, 1, 1)
-        self.std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3, 1, 1)
+        # No normalization - use raw pixel values
     
     def __len__(self):
         return len(self.img_arr)
@@ -157,8 +155,7 @@ class BedsheetKeypointDataset(Dataset):
         img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
         keypoints_tensor = torch.from_numpy(keypoints_img).unsqueeze(0).float()
         
-        # Apply Meta CLIP normalization
-        img_tensor = (img_tensor - self.mean) / self.std
+        # No normalization applied
         
         # Apply augmentation if provided
         if self.transform:
@@ -693,10 +690,7 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
 
 def save_keypoint_visualization(image, pred_heatmap, gt_heatmap, pred_keypoints, gt_keypoints, save_path):
     """Save visualization of keypoint predictions."""
-    # Denormalize image
-    mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3, 1, 1)
-    std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3, 1, 1)
-    image = (image * std + mean).clamp(0, 1)
+    # Convert image to numpy
     image = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
     
     # Create visualization

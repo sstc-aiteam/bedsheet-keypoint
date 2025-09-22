@@ -128,8 +128,8 @@ class SimpleKeypointInference:
         target_size = self.model_config['image_size']
         img_resized = cv2.resize(img_rgb, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
         
-        # Convert to float and normalize
-        image_array = img_resized.astype(np.float32) / 255.0
+        # Convert to float
+        image_array = img_resized.astype(np.float32)
         
         # Apply mask if available
         if mask_all is not None:
@@ -138,13 +138,11 @@ class SimpleKeypointInference:
             # Apply mask to resized image
             image_array[mask_resized == 0] = 0
         
-        # Apply Meta CLIP normalization (same as training)
-        mean = np.array([0.48145466, 0.4578275, 0.40821073])
-        std = np.array([0.26862954, 0.26130258, 0.27577711])
-        image_array = (image_array - mean) / std
+        # No normalization applied (use raw pixel values)
         
-        # Convert to tensor and add batch dimension
-        image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)
+        # Convert to tensor and add batch dimension (normalize to 0-1 range)
+        image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).float() / 255.0
+        image_tensor = image_tensor.unsqueeze(0)
         
         return image_tensor.to(self.device), original_size
     
