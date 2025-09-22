@@ -49,6 +49,60 @@ def thresholded_locations(data_2d, threshold):
         centroids.append(centroid)
     return centroids
 
+def combine_nearby_peaks(peaks, distance_threshold=10):
+    """
+    Combine nearby peaks into single keypoints using clustering.
+    
+    Args:
+        peaks: List of peak coordinates [[y1, x1], [y2, x2], ...]
+        distance_threshold: Maximum distance to consider peaks as part of same cluster
+    
+    Returns:
+        List of combined peak coordinates
+    """
+    if not peaks:
+        return []
+    
+    # Convert to numpy array for easier manipulation
+    peaks = np.array(peaks)
+    
+    # If only one peak, return it
+    if len(peaks) == 1:
+        return peaks.tolist()
+    
+    # Calculate pairwise distances
+    from scipy.spatial.distance import pdist, squareform
+    distances = squareform(pdist(peaks))
+    
+    # Create clusters
+    clusters = []
+    used = set()
+    
+    for i in range(len(peaks)):
+        if i in used:
+            continue
+            
+        # Start a new cluster
+        cluster = [i]
+        used.add(i)
+        
+        # Find all peaks within distance_threshold
+        for j in range(i + 1, len(peaks)):
+            if j not in used and distances[i, j] <= distance_threshold:
+                cluster.append(j)
+                used.add(j)
+        
+        clusters.append(cluster)
+    
+    # Calculate centroid for each cluster
+    combined_peaks = []
+    for cluster in clusters:
+        cluster_peaks = peaks[cluster]
+        centroid = cluster_peaks.mean(axis=0)
+        combined_peaks.append(centroid)
+    
+    return combined_peaks
+
 def extract_mask_compare(image, yolo_model_finetuned, allowed_classes):
     # image_name = os.path.basename(image_path)
     # 推論
@@ -149,3 +203,48 @@ def resize_image_and_keypoints(image, keypoints, target_width, target_height):
         adjusted_keypoints.append([new_x, new_y])
     
     return resized_image, adjusted_keypoints
+
+def extract_class_mask(image, yolo_model, target_class, image_size=256):
+    """Extract mask for a specific class from an image."""
+    # Resize image for processing
+    image_resized = cv2.resize(image, (image_size, image_size))
+    
+    # Run YOLO detection
+    results = yolo_model(image_resized, verbose=False)
+    
+    # Initialize mask
+    class_mask = np.zeros((image_size, image_size), dtype=np.uint8)
+    
+    # Process detections
+    for result in results:
+        if result.boxes is not None and result.masks is not None:
+            for i, box in enumerate(result.boxes):
+                class_id = int(box.cls[0])
+                confidence = float(box.conf[0])
+                
+                # Only process target class with sufficient confidence
+                if class_id == target_class and confidence > 0.5:
+                    if i < len(result.masks.data):
+                        mask_data = result.masks.data[i].cpu().numpy()
+                        mask_resized = cv2.resize(mask_data, (image_size, image_size))
+                        binary_mask = (mask_resized > 0.5).astype(np.uint8) * 255
+                        
+                        # Combine with existing mask (in case of multiple instances)
+                        class_mask = np.maximum(class_mask, binary_mask)
+    
+    return class_mask
+
+def extract_all_class_masks(image, yolo_model, image_size=256):
+    """Extract masks for all three classes (bed, pillow, sheet) from an image."""
+    # Load image if path is provided
+    if isinstance(image, str):
+        image = cv2.imread(image)
+        if image is None:
+            return None, None, None
+    
+    # Extract masks for each class
+    bed_mask = extract_class_mask(image, yolo_model, target_class=0, image_size=image_size)  # bed
+    pillow_mask = extract_class_mask(image, yolo_model, target_class=1, image_size=image_size)  # pillow
+    sheet_mask = extract_class_mask(image, yolo_model, target_class=2, image_size=image_size)  # sheet
+    
+    return bed_mask, pillow_mask, sheet_mask

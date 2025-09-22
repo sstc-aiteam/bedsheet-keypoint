@@ -105,6 +105,9 @@ class ClipHeatmapModel(nn.Module):
         if not HF_AVAILABLE:
             raise ImportError("transformers library is required. Install with: pip install transformers")
         
+        # Store model name for saving
+        self.model_name = model_name
+        
         # Load full CLIP model; we will use its vision submodule directly.
         clip = CLIPModel.from_pretrained(model_name)
         self.clip = clip
@@ -238,7 +241,7 @@ class ClipHeatmapModel(nn.Module):
         
         # Save model configuration
         config = {
-            'model_name': 'openai/clip-vit-base-patch16',  # Default, could be made configurable
+            'model_name': self.model_name,  # Use the actual model name from the instance
             'image_size': self.image_size,
             'use_lora': self.use_lora,
             'use_text_prior': self.use_text_prior,

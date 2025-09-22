@@ -275,3 +275,6 @@ models/*.json
 __pycache__/
 *.pyc
 *.pyo
+
+# cursor
+.cursor
