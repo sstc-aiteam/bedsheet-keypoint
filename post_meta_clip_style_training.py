@@ -633,6 +633,16 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             
             # Get ground truth heatmap
             gt_heatmap = keypoints[0, 0].cpu().numpy()
+
+            # normalize the heatmap
+            if pred_heatmap.max() > 0.0005:
+                pred_heatmap = pred_heatmap / pred_heatmap.max()
+            else:
+                pred_heatmap = 0
+
+            # Debug: Check heatmap value ranges
+            print(f"DEBUG: Predicted heatmap range - min: {pred_heatmap.min():.6f}, max: {pred_heatmap.max():.6f}, mean: {pred_heatmap.mean():.6f}")
+            print(f"DEBUG: Ground truth heatmap range - min: {gt_heatmap.min():.6f}, max: {gt_heatmap.max():.6f}, mean: {gt_heatmap.mean():.6f}")
             
             # Calculate match rate using streamlined function
             match_result = calculate_keypoint_match_rate(
@@ -645,6 +655,9 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             distances = match_result['distances']
             gt_keypoints = match_result['gt_keypoints']
             pred_keypoints = match_result['pred_keypoints']
+            
+            # Debug: Check keypoint detection results
+            print(f"DEBUG: Found {len(gt_keypoints)} GT keypoints, {len(pred_keypoints)} predicted keypoints, {matched} matched")
             
             total_gt_points += match_result['total_gt']
             matched_total += matched

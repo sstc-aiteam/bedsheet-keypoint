@@ -629,6 +629,12 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             # Get ground truth heatmap
             gt_heatmap = keypoints[0, 0].cpu().numpy()
             
+            # normalize the heatmap
+            if pred_heatmap.max() > 0.0005:
+                pred_heatmap = pred_heatmap / pred_heatmap.max()
+            else:
+                pred_heatmap = 0
+
             # Calculate match rate using streamlined function
             match_result = calculate_keypoint_match_rate(
                 gt_heatmap, pred_heatmap,

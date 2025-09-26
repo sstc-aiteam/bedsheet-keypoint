@@ -11,6 +11,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional
 import os
+try:
+    from ..utils.model_utils import *
+except ImportError:
+    # Fallback for when running from root directory
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+    from src.utils.model_utils import *
 
 # Import CLIP and PEFT dependencies
 try:
@@ -65,7 +73,7 @@ class ClipHeatmapHead(nn.Module):
         x = self.block(x)
         x = self.out(x)
         # Ensure positive for KL loss
-        return F.softplus(x)
+        return spatial_softmax(x)
 
 
 class ClipHeatmapModel(nn.Module):

@@ -54,7 +54,7 @@ class SimpleKeypointInference:
         
         # Create model with same config as training
         self.model = ClipHeatmapModel(
-            model_name='openai/clip-vit-base-patch16',
+            model_name='facebook/metaclip-b16-fullcc2.5b',
             image_size=self.model_config['image_size'],
             use_lora=True,
             lora_r=self.model_config['lora_r'],
@@ -166,9 +166,8 @@ class SimpleKeypointInference:
         # Convert to numpy (same as training: pred_heatmap = pred_heatmaps[0, 0].cpu().numpy())
         heatmap_np = heatmap.squeeze().cpu().numpy()
         
-        # Normalize heatmap (exactly same as training)
-        if heatmap_np.max() > 0:
-            heatmap_np = heatmap_np / heatmap_np.max()
+        # normalize the heatmap
+        heatmap_np = heatmap_np / heatmap_np.max()
         
         # Extract keypoints using EXACT same method as training evaluation
         peaks = thresholded_locations(heatmap_np, threshold=0.3)
@@ -177,7 +176,8 @@ class SimpleKeypointInference:
         combined_peaks = combine_nearby_peaks(peaks, distance_threshold=10)
         
         # Convert to keypoint format (same coordinate order as training: (x, y))
-        keypoints = [(int(p[1]), int(p[0])) for p in peaks]
+        # Use combined_peaks to reduce nearby duplicates
+        keypoints = [(int(p[1]), int(p[0])) for p in combined_peaks]
         
         # Scale keypoints to original size
         scale_x = original_size[0] / heatmap_np.shape[1]
