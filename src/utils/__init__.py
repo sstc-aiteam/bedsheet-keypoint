@@ -16,12 +16,7 @@ from .model_utils import (
     thresholded_locations,
     kl_heatmap_loss
 )
-from .quantization_utils import (
-    create_quantized_model_structure,
-    prepare_model_for_qat,
-    convert_to_quantized,
-    export_model_pipeline
-)
+# Quantization utilities removed - functionality deprecated
 
 __all__ = [
     # Model utilities
@@ -38,11 +33,5 @@ __all__ = [
     'thresholded_locations',
     
     # Losses
-    'kl_heatmap_loss',
-    
-    # Quantization
-    'create_quantized_model_structure',
-    'prepare_model_for_qat',
-    'convert_to_quantized', 
-    'export_model_pipeline'
+    'kl_heatmap_loss'
 ]

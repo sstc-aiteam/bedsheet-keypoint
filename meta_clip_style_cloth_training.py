@@ -97,7 +97,7 @@ def extract_keypoints_from_heatmap(heatmap: np.ndarray, max_keypoints: int = 4, 
     
     smoothed_heatmap = gaussian_filter(heatmap, sigma=1.0)
     max_val = smoothed_heatmap.max()
-    threshold = max(0.1, max_val * 0.3)
+    threshold = max(0.0005, max_val * 0.0005)
     
     # Local maxima detection
     local_maxima = maximum_filter(smoothed_heatmap, size=7) == smoothed_heatmap
@@ -670,8 +670,10 @@ def train_meta_clip_heatmap():
             pred = eval_model(pix)  # (1,1,H,W)
             heat = pred.squeeze(0).squeeze(0).detach().cpu().numpy()
             m = heat.max() if heat.size > 0 else 1.0
-            if m > 0:
+            if m > 0.0005:
                 heat = heat / m
+            else:
+                heat = 0
 
             peaks = thresholded_locations(heat, threshold=0.3)
             peaks_xy = [(int(p[1]), int(p[0])) for p in peaks]

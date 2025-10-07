@@ -34,12 +34,13 @@ from ..utils.model_utils import (
     kl_heatmap_loss
 )
 
-from ..utils.quantization_utils import (
-    create_quantized_model_structure,
-    prepare_model_for_qat,
-    convert_to_quantized,
-    export_model_pipeline
-)
+# Quantization utilities removed - functionality deprecated
+# from ..utils.quantization_utils import (
+#     create_quantized_model_structure,
+#     prepare_model_for_qat,
+#     convert_to_quantized,
+#     export_model_pipeline
+# )
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
 # Set random seeds for reproducibility
@@ -936,21 +937,21 @@ def main_training_pipeline(
     else:
         raise ValueError("Pretrained model path is required for quantization fine-tuning!")
     
-    # Convert to quantized model for fine-tuning if requested
-    if config.get("use_quantization", False):
-        print("Converting to quantized model for fine-tuning...")
-        model = create_quantized_model_structure(backbone, in_channels_list)
-        model = prepare_model_for_qat(model)
-        
-        # Load the pretrained weights into the quantized model
-        try:
-            model.load_state_dict(torch.load(config["pretrained_path"], map_location=device), strict=False)
-            print("Pretrained weights loaded into quantized model")
-        except Exception as e:
-            print(f"Warning: Could not load all pretrained weights into quantized model: {e}")
-            print("Continuing with partial weight loading...")
-        
-        print("Using quantized model for fine-tuning")
+    # Quantization functionality removed - deprecated
+    # if config.get("use_quantization", False):
+    #     print("Converting to quantized model for fine-tuning...")
+    #     model = create_quantized_model_structure(backbone, in_channels_list)
+    #     model = prepare_model_for_qat(model)
+    #     
+    #     # Load the pretrained weights into the quantized model
+    #     try:
+    #         model.load_state_dict(torch.load(config["pretrained_path"], map_location=device), strict=False)
+    #         print("Pretrained weights loaded into quantized model")
+    #     except Exception as e:
+    #         print(f"Warning: Could not load all pretrained weights into quantized model: {e}")
+    #         print("Continuing with partial weight loading...")
+    #     
+    #     print("Using quantized model for fine-tuning")
     else:
         print("Using regular model (no quantization)")
     
@@ -1054,32 +1055,32 @@ def main_training_pipeline(
     )
     print(f"Regular model validation loss: {val_loss:.4f}")
     
-    # Convert to quantized if using QAT
-    if config.get("use_quantization", False):
-        print("Converting to final quantized model...")
-        model = convert_to_quantized(model)
-        torch.save(model.state_dict(), f"{config['model_save_path']}_quantized.pth")
-        
-        # Evaluate quantized model
-        print("Evaluating quantized model...")
-        quantized_val_loss = evaluate_quantized_model(
-            model, 
-            test_loader, 
-            device, 
-            config.get("results_dir", "results")
-        )
-        print(f"Quantized model validation loss: {quantized_val_loss:.4f}")
+    # Quantization functionality removed - deprecated
+    # if config.get("use_quantization", False):
+    #     print("Converting to final quantized model...")
+    #     model = convert_to_quantized(model)
+    #     torch.save(model.state_dict(), f"{config['model_save_path']}_quantized.pth")
+    #     
+    #     # Evaluate quantized model
+    #     print("Evaluating quantized model...")
+    #     quantized_val_loss = evaluate_quantized_model(
+    #         model, 
+    #         test_loader, 
+    #         device, 
+    #         config.get("results_dir", "results")
+    #     )
+    #     print(f"Quantized model validation loss: {quantized_val_loss:.4f}")
     
-    # Export model
-    if config.get("export_model", False):
-        print("Exporting model...")
-        export_results = export_model_pipeline(
-            model,
-            config.get("export_name", "keypoint_model"),
-            config.get("export_dir", "models"),
-            formats=config.get("export_formats", ["onnx"])
-        )
-        print(f"Export results: {export_results}")
+    # Export model functionality removed - deprecated
+    # if config.get("export_model", False):
+    #     print("Exporting model...")
+    #     export_results = export_model_pipeline(
+    #         model,
+    #         config.get("export_name", "keypoint_model"),
+    #         config.get("export_dir", "models"),
+    #         formats=config.get("export_formats", ["onnx"])
+    #     )
+    #     print(f"Export results: {export_results}")
     
     return model, history
 

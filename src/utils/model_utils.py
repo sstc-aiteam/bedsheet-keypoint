@@ -218,54 +218,7 @@ def load_state_dict_safely(
     
     return compatible_keys, incompatible_keys
 
-def load_quantized_model_functional(
-    model_path: str,
-    backbone,
-    in_channels_list,
-    device: torch.device
-) -> torch.nn.Module:
-    """
-    Functional approach to loading quantized models.
-    
-    Args:
-        model_path: Path to saved model
-        backbone: Model backbone
-        in_channels_list: List of input channels
-        device: Target device
-    
-    Returns:
-        Loaded quantized model
-    """
-    # Local import to avoid circular dependency
-    from .quantization_utils import create_quantized_model_structure
-    
-    print(f"Loading quantized model from: {model_path}")
-    
-    # Load saved state dict
-    saved_state_dict = torch.load(model_path, map_location='cpu')
-    print(f"Saved model contains {len(saved_state_dict)} parameters")
-    
-    # Create model structure
-    quantized_model = create_quantized_model_structure(backbone, in_channels_list)
-    
-    # Load state dict safely
-    compatible_keys, incompatible_keys = load_state_dict_safely(quantized_model, saved_state_dict)
-    
-    # Report loading results
-    print(f"Successfully loaded {len(compatible_keys)} parameters")
-    if incompatible_keys:
-        print(f"Failed to load {len(incompatible_keys)} parameters:")
-        for key, reason in list(incompatible_keys.items())[:5]:  # Show first 5
-            print(f"  {key}: {reason}")
-    
-    # Load compatible parameters
-    quantized_model.load_state_dict(compatible_keys, strict=False)
-    
-    # Move to device and set to eval mode
-    quantized_model = quantized_model.to(device)
-    quantized_model.eval()
-    
-    return quantized_model
+# Quantized model loading function removed - quantization functionality deprecated
 
 def extract_gt_keypoint_count_gpu(gt_hm: torch.Tensor, threshold: float = 0.1) -> int:
     """

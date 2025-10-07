@@ -1,24 +1,250 @@
 """
-TensorRT utilities for keypoint detection model optimization.
+Generalized TensorRT utilities for multiple model types.
 
-This module provides functions to convert PyTorch models to TensorRT format
-for faster inference on NVIDIA GPUs.
+This module provides a flexible system to convert various PyTorch models to TensorRT format
+for faster inference on NVIDIA GPUs. It supports multiple model architectures through
+a registry-based system.
 """
 
 import os
 import torch
 import numpy as np
 import tensorrt as trt
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Union, Callable, Type
+from abc import ABC, abstractmethod
 import logging
+import importlib
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class TensorRTConverter:
-    """TensorRT model converter for keypoint detection models."""
+class ModelConfig:
+    """Configuration for model conversion."""
+    
+    def __init__(
+        self,
+        model_type: str,
+        model_path: str,
+        input_shape: Tuple[int, int, int, int] = (1, 3, 256, 256),
+        precision: str = "fp16",
+        workspace_size: int = 1 << 30,
+        max_batch_size: int = 1,
+        dynamic_axes: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ):
+        self.model_type = model_type
+        self.model_path = model_path
+        self.input_shape = input_shape
+        self.precision = precision
+        self.workspace_size = workspace_size
+        self.max_batch_size = max_batch_size
+        self.dynamic_axes = dynamic_axes or {
+            'input': {0: 'batch_size'},
+            'output': {0: 'batch_size'}
+        }
+        self.extra_kwargs = kwargs
+
+
+class ModelLoader(ABC):
+    """Abstract base class for model loaders."""
+    
+    @abstractmethod
+    def load_model(self, config: ModelConfig) -> torch.nn.Module:
+        """Load and return a PyTorch model."""
+        pass
+    
+    @abstractmethod
+    def get_model_info(self, config: ModelConfig) -> Dict[str, Any]:
+        """Get model information for debugging."""
+        pass
+
+
+class HybridKeypointNetLoader(ModelLoader):
+    """Loader for HybridKeypointNet models."""
+    
+    def load_model(self, config: ModelConfig) -> torch.nn.Module:
+        """Load HybridKeypointNet model."""
+        from src.models.hybrid_keypoint_net import HybridKeypointNet
+        from src.utils.model_utils import YoloBackbone, EnhancedYoloBackbone
+        from ultralytics import YOLO
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        use_enhanced_yolo = config.extra_kwargs.get('use_enhanced_yolo', True)
+        
+        if use_enhanced_yolo:
+            logger.info("Using Enhanced YOLO backbone")
+            yolo_model = YOLO('yolo11l-pose.pt')
+            backbone = EnhancedYoloBackbone(
+                yolo_model, 
+                include_neck=True,
+                selected_indices=[2, 4, 6, 8, 10, 13, 16, 19, 22]
+            )
+        else:
+            logger.info("Using Original YOLO backbone")
+            yolo_model = YOLO('yolo11l-pose.pt')
+            backbone_seq = yolo_model.model.model[:12]
+            backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
+        
+        # Get input channels list
+        input_dummy = torch.randn(1, 3, 128, 128)
+        with torch.no_grad():
+            feats = backbone(input_dummy)
+        in_channels_list = [f.shape[1] for f in feats]
+        
+        # Create model
+        model = HybridKeypointNet(backbone, in_channels_list)
+        
+        # Load state dict
+        state_dict = torch.load(config.model_path, map_location=device)
+        
+        # Handle model state dict with _orig_mod prefixes
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("_orig_mod."):
+                new_key = key[10:]  # Remove "_orig_mod." prefix
+                new_state_dict[new_key] = value
+            else:
+                new_state_dict[key] = value
+        
+        # Load with strict=False to handle any remaining mismatches
+        missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
+        if missing_keys:
+            logger.warning(f"Missing keys: {len(missing_keys)}")
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys: {len(unexpected_keys)}")
+        
+        model.eval()
+        return model
+    
+    def get_model_info(self, config: ModelConfig) -> Dict[str, Any]:
+        return {
+            'model_type': 'HybridKeypointNet',
+            'use_enhanced_yolo': config.extra_kwargs.get('use_enhanced_yolo', True),
+            'input_shape': config.input_shape
+        }
+
+
+class ClipHeatmapModelLoader(ModelLoader):
+    """Loader for CLIP-based heatmap models."""
+    
+    def load_model(self, config: ModelConfig) -> torch.nn.Module:
+        """Load CLIP heatmap model."""
+        from src.models.clip_heatmap_model import create_clip_heatmap_model
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Create model
+        model = create_clip_heatmap_model(
+            model_name=config.extra_kwargs.get('model_name', 'facebook/metaclip-b16-fullcc2.5b'),
+            image_size=config.input_shape[-1],
+            use_lora=config.extra_kwargs.get('use_lora', True),
+            lora_r=config.extra_kwargs.get('lora_r', 16),
+            lora_alpha=config.extra_kwargs.get('lora_alpha', 32),
+            lora_dropout=config.extra_kwargs.get('lora_dropout', 0.05),
+            use_text_prior=config.extra_kwargs.get('use_text_prior', True),
+            prior_prompts=config.extra_kwargs.get('prior_prompts', None),
+            negative_prompts=config.extra_kwargs.get('negative_prompts', None),
+            prior_weight=config.extra_kwargs.get('prior_weight', 0.5)
+        )
+        
+        # Load state dict
+        state_dict = torch.load(config.model_path, map_location=device)
+        model.load_state_dict(state_dict)
+        model.eval()
+        
+        return model
+    
+    def get_model_info(self, config: ModelConfig) -> Dict[str, Any]:
+        return {
+            'model_type': 'ClipHeatmapModel',
+            'model_name': config.extra_kwargs.get('model_name', 'facebook/metaclip-b16-fullcc2.5b'),
+            'use_lora': config.extra_kwargs.get('use_lora', True),
+            'input_shape': config.input_shape
+        }
+
+
+class EfficientKeypointNetLoader(ModelLoader):
+    """Loader for EfficientKeypointNet models."""
+    
+    def load_model(self, config: ModelConfig) -> torch.nn.Module:
+        """Load EfficientKeypointNet model."""
+        from src.models.efficient_keypoint_net import EfficientKeypointNet, EfficientViTKeypointNet, MobileKeypointNet
+        from src.utils.model_utils import YoloBackbone
+        from ultralytics import YOLO
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model_variant = config.extra_kwargs.get('model_variant', 'EfficientKeypointNet')
+        
+        # Create backbone
+        yolo_model = YOLO('yolov8s.pt')
+        backbone_seq = yolo_model.model.model[:8]
+        backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7])
+        
+        # Get input channels list
+        input_dummy = torch.randn(1, 3, 128, 128)
+        with torch.no_grad():
+            feats = backbone(input_dummy)
+        in_channels_list = [f.shape[1] for f in feats]
+        
+        # Create model based on variant
+        if model_variant == 'EfficientKeypointNet':
+            model = EfficientKeypointNet(backbone, in_channels_list)
+        elif model_variant == 'EfficientViTKeypointNet':
+            model = EfficientViTKeypointNet(backbone, in_channels_list)
+        elif model_variant == 'MobileKeypointNet':
+            model = MobileKeypointNet(backbone, in_channels_list)
+        else:
+            raise ValueError(f"Unknown model variant: {model_variant}")
+        
+        # Load state dict
+        state_dict = torch.load(config.model_path, map_location=device)
+        model.load_state_dict(state_dict)
+        model.eval()
+        
+        return model
+    
+    def get_model_info(self, config: ModelConfig) -> Dict[str, Any]:
+        return {
+            'model_type': 'EfficientKeypointNet',
+            'model_variant': config.extra_kwargs.get('model_variant', 'EfficientKeypointNet'),
+            'input_shape': config.input_shape
+        }
+
+
+class ModelRegistry:
+    """Registry for different model loaders."""
+    
+    def __init__(self):
+        self._loaders: Dict[str, ModelLoader] = {}
+        self._register_default_loaders()
+    
+    def _register_default_loaders(self):
+        """Register default model loaders."""
+        self.register_loader('hybrid_keypoint_net', HybridKeypointNetLoader())
+        self.register_loader('clip_heatmap_model', ClipHeatmapModelLoader())
+        self.register_loader('efficient_keypoint_net', EfficientKeypointNetLoader())
+    
+    def register_loader(self, model_type: str, loader: ModelLoader):
+        """Register a model loader."""
+        self._loaders[model_type] = loader
+        logger.info(f"Registered loader for model type: {model_type}")
+    
+    def get_loader(self, model_type: str) -> ModelLoader:
+        """Get a model loader by type."""
+        if model_type not in self._loaders:
+            raise ValueError(f"No loader registered for model type: {model_type}")
+        return self._loaders[model_type]
+    
+    def list_available_types(self) -> list:
+        """List all available model types."""
+        return list(self._loaders.keys())
+
+
+class GeneralizedTensorRTConverter:
+    """Generalized TensorRT converter for multiple model types."""
     
     def __init__(self, workspace_size: int = 1 << 30):
         """
@@ -32,43 +258,47 @@ class TensorRTConverter:
         self.builder = trt.Builder(self.logger)
         self.config = self.builder.create_builder_config()
         self.config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size)
+        self.registry = ModelRegistry()
         
-    def convert_pytorch_to_tensorrt(
+    def convert_model(
         self,
-        model: torch.nn.Module,
-        input_shape: Tuple[int, int, int, int],
-        output_path: str,
-        precision: str = "fp16",
-        max_batch_size: int = 1,
-        dynamic_axes: Optional[Dict[str, Any]] = None
+        config: ModelConfig,
+        output_path: str
     ) -> str:
         """
-        Convert PyTorch model to TensorRT format.
+        Convert any supported model to TensorRT format.
         
         Args:
-            model: PyTorch model to convert
-            input_shape: Input tensor shape (batch_size, channels, height, width)
+            config: Model configuration
             output_path: Path to save TensorRT model
-            precision: Precision mode ("fp32", "fp16", "int8")
-            max_batch_size: Maximum batch size for TensorRT model
-            dynamic_axes: Dynamic axes configuration
             
         Returns:
             Path to saved TensorRT model
         """
-        logger.info(f"Converting model to TensorRT with precision: {precision}")
+        logger.info(f"Converting {config.model_type} model to TensorRT with precision: {config.precision}")
+        
+        # Get model loader
+        loader = self.registry.get_loader(config.model_type)
+        
+        # Load model
+        model = loader.load_model(config)
+        model_info = loader.get_model_info(config)
+        logger.info(f"Model info: {model_info}")
         
         # Set precision
-        if precision == "fp16" and self.builder.platform_has_fast_fp16:
+        if config.precision == "fp16" and self.builder.platform_has_fast_fp16:
             self.config.set_flag(trt.BuilderFlag.FP16)
             logger.info("FP16 precision enabled")
-        elif precision == "int8" and self.builder.platform_has_fast_int8:
+        elif config.precision == "int8" and self.builder.platform_has_fast_int8:
             self.config.set_flag(trt.BuilderFlag.INT8)
             logger.info("INT8 precision enabled")
         
         # Add optimization profile for dynamic inputs
         profile = self.builder.create_optimization_profile()
-        profile.set_shape("input", (1, 3, 128, 128), (1, 3, 128, 128), (1, 3, 128, 128))
+        min_shape = (1, config.input_shape[1], config.input_shape[2], config.input_shape[3])
+        opt_shape = config.input_shape
+        max_shape = (config.max_batch_size, config.input_shape[1], config.input_shape[2], config.input_shape[3])
+        profile.set_shape("input", min_shape, opt_shape, max_shape)
         self.config.add_optimization_profile(profile)
         
         # Create network
@@ -76,7 +306,7 @@ class TensorRTConverter:
         
         # Create ONNX model first
         onnx_path = output_path.replace('.trt', '.onnx')
-        self._export_to_onnx(model, input_shape, onnx_path, dynamic_axes)
+        self._export_to_onnx(model, config, onnx_path)
         
         # Parse ONNX to TensorRT
         parser = trt.OnnxParser(network, self.logger)
@@ -106,15 +336,14 @@ class TensorRTConverter:
     def _export_to_onnx(
         self,
         model: torch.nn.Module,
-        input_shape: Tuple[int, int, int, int],
-        output_path: str,
-        dynamic_axes: Optional[Dict[str, Any]] = None
+        config: ModelConfig,
+        output_path: str
     ):
         """Export PyTorch model to ONNX format."""
         model.eval()
         
         # Create dummy input
-        dummy_input = torch.randn(input_shape)
+        dummy_input = torch.randn(config.input_shape)
         
         # Export to ONNX
         torch.onnx.export(
@@ -126,16 +355,13 @@ class TensorRTConverter:
             do_constant_folding=True,
             input_names=['input'],
             output_names=['output'],
-            dynamic_axes=dynamic_axes or {
-                'input': {0: 'batch_size'},
-                'output': {0: 'batch_size'}
-            }
+            dynamic_axes=config.dynamic_axes
         )
         logger.info(f"ONNX model exported to: {output_path}")
 
 
-class TensorRTInference:
-    """TensorRT inference engine for keypoint detection."""
+class GeneralizedTensorRTInference:
+    """Generalized TensorRT inference engine."""
     
     def __init__(self, model_path: str):
         """
@@ -154,48 +380,52 @@ class TensorRTInference:
         
         self.context = self.engine.create_execution_context()
         
-        # Get input/output information - use the correct TensorRT API
+        # Get input/output information
         try:
-            # Try to get tensor names first
             input_name = self.engine.get_tensor_name(0)
             output_name = self.engine.get_tensor_name(1)
             
-            # Get shapes using the correct method and convert to tuple
             input_dims = self.engine.get_tensor_shape(input_name)
             output_dims = self.engine.get_tensor_shape(output_name)
             self.input_shape = tuple(input_dims)
             self.output_shape = tuple(output_dims)
             
         except Exception as e:
-            # Fallback: try to get shapes directly
-            try:
-                self.input_shape = self.engine.get_tensor_shape(0)
-                self.output_shape = self.engine.get_tensor_shape(1)
-            except Exception as e2:
-                print(f"Warning: Could not get tensor shapes: {e2}")
+            logger.warning(f"Could not get tensor shapes: {e}")
                 # Use default shapes
-                self.input_shape = (1, 3, 128, 128)
-                self.output_shape = (1, 1, 128, 128)
+            self.input_shape = (1, 3, 256, 256)
+            self.output_shape = (1, 1, 256, 256)
         
         logger.info(f"TensorRT model loaded: {model_path}")
         logger.info(f"Input shape: {self.input_shape}")
         logger.info(f"Output shape: {self.output_shape}")
     
-    def infer(self, input_data: np.ndarray) -> np.ndarray:
+    def infer(self, input_data) -> np.ndarray:
         """
         Run inference on input data.
         
         Args:
-            input_data: Input tensor with shape (batch_size, channels, height, width)
+            input_data: Input tensor (PyTorch tensor or numpy array) with shape (batch_size, channels, height, width)
             
         Returns:
             Model output
         """
+        # Handle both PyTorch tensors and numpy arrays
+        if isinstance(input_data, torch.Tensor):
+            # If it's a PyTorch tensor, convert to numpy first
+            if input_data.is_cuda:
+                input_numpy = input_data.cpu().numpy()
+            else:
+                input_numpy = input_data.numpy()
+        else:
+            # It's already a numpy array
+            input_numpy = input_data
+        
         # Allocate GPU memory
-        input_size = trt.volume(self.input_shape) * input_data.dtype.itemsize
+        input_size = trt.volume(self.input_shape) * input_numpy.dtype.itemsize
         output_size = trt.volume(self.output_shape) * np.float32().itemsize
         
-        d_input = torch.cuda.FloatTensor(input_data).contiguous()
+        d_input = torch.cuda.FloatTensor(input_numpy).contiguous()
         d_output = torch.empty(self.output_shape, dtype=torch.float32, device='cuda')
         
         # Create bindings
@@ -251,179 +481,85 @@ class TensorRTInference:
         }
 
 
-def convert_keypoint_model_to_tensorrt(
+def convert_any_model_to_tensorrt(
+    model_type: str,
     model_path: str,
     output_path: str,
-    input_shape: Tuple[int, int, int, int] = (1, 3, 128, 128),
+    input_shape: Tuple[int, int, int, int] = (1, 3, 256, 256),
     precision: str = "fp16",
     workspace_size: int = 1 << 30,
-    use_enhanced_yolo: bool = False
+    **kwargs
 ) -> str:
     """
-    Convert keypoint detection model to TensorRT format.
+    Convert any supported model to TensorRT format.
     
     Args:
+        model_type: Type of model ('hybrid_keypoint_net', 'clip_heatmap_model', 'efficient_keypoint_net')
         model_path: Path to PyTorch model (.pth file)
         output_path: Path to save TensorRT model (.trt file)
         input_shape: Input tensor shape
         precision: Precision mode ("fp32", "fp16", "int8")
         workspace_size: Maximum workspace size in bytes
-        use_enhanced_yolo: Whether to use Enhanced YOLO backbone (must match training)
+        **kwargs: Additional model-specific parameters
         
     Returns:
         Path to saved TensorRT model
     """
-    logger.info(f"Converting keypoint model: {model_path}")
-    
-    # Import model architecture and utilities
-    from src.models.hybrid_keypoint_net import HybridKeypointNet
-    from src.utils.model_utils import YoloBackbone, EnhancedYoloBackbone
-    from ultralytics import YOLO
-    
-    # Create model with proper initialization
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    if use_enhanced_yolo:
-        # Enhanced YOLO + ViT (for models trained with Enhanced YOLO)
-        logger.info("Using Enhanced YOLO backbone for conversion")
-        yolo_model = YOLO('yolo11l-pose.pt')
-        backbone = EnhancedYoloBackbone(
-            yolo_model, 
-            include_neck=True,
-            selected_indices=[2, 4, 6, 8, 10, 13, 16, 19, 22]
-        )
-    else:
-        # Original YOLO + ViT (for models trained with original YOLO)
-        logger.info("Using Original YOLO backbone for conversion")
-        yolo_model = YOLO('yolo11l-pose.pt')
-        backbone_seq = yolo_model.model.model[:12]
-        backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
-    
-    # Get input channels list
-    input_dummy = torch.randn(1, 3, 128, 128)
-    with torch.no_grad():
-        feats = backbone(input_dummy)
-    in_channels_list = [f.shape[1] for f in feats]
-    logger.info(f"Backbone features: {len(feats)}, Input channels: {in_channels_list}")
-    
-    # Create model
-    model = HybridKeypointNet(backbone, in_channels_list)
-    
-    # Load state dict
-    state_dict = torch.load(model_path, map_location=device)
-    
-    # Handle model state dict with _orig_mod prefixes
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        if key.startswith("_orig_mod."):
-            new_key = key[10:]  # Remove "_orig_mod." prefix
-            new_state_dict[new_key] = value
-        else:
-            new_state_dict[key] = value
-    
-    # Load with strict=False to handle any remaining mismatches
-    missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
-    if missing_keys:
-        logger.warning(f"Missing keys: {len(missing_keys)}")
-    if unexpected_keys:
-        logger.warning(f"Unexpected keys: {len(unexpected_keys)}")
-    
-    model.eval()
-    
-    # Convert to TensorRT
-    converter = TensorRTConverter(workspace_size=workspace_size)
-    tensorrt_path = converter.convert_pytorch_to_tensorrt(
-        model=model,
+    config = ModelConfig(
+        model_type=model_type,
+        model_path=model_path,
         input_shape=input_shape,
-        output_path=output_path,
-        precision=precision
+        precision=precision,
+        workspace_size=workspace_size,
+        **kwargs
     )
     
-    logger.info(f"Conversion completed: {tensorrt_path}")
-    return tensorrt_path
+    converter = GeneralizedTensorRTConverter(workspace_size=workspace_size)
+    return converter.convert_model(config, output_path)
 
 
-def benchmark_tensorrt_vs_pytorch(
+def benchmark_any_model(
+    model_type: str,
     pytorch_model_path: str,
     tensorrt_model_path: str,
-    input_shape: Tuple[int, int, int, int] = (1, 3, 128, 128),
+    input_shape: Tuple[int, int, int, int] = (1, 3, 256, 256),
     num_runs: int = 100,
-    use_enhanced_yolo: bool = False
+    **kwargs
 ) -> Dict[str, Any]:
     """
-    Benchmark TensorRT vs PyTorch inference performance.
+    Benchmark any supported model (TensorRT vs PyTorch).
     
     Args:
+        model_type: Type of model
         pytorch_model_path: Path to PyTorch model
         tensorrt_model_path: Path to TensorRT model
         input_shape: Input tensor shape
         num_runs: Number of benchmark runs
-        use_enhanced_yolo: Whether to use Enhanced YOLO backbone (must match training)
+        **kwargs: Additional model-specific parameters
         
     Returns:
         Dictionary with benchmark results
     """
-    logger.info("Running TensorRT vs PyTorch benchmark")
+    logger.info(f"Running TensorRT vs PyTorch benchmark for {model_type}")
     
-    # Import model architecture and utilities
-    from src.models.hybrid_keypoint_net import HybridKeypointNet
-    from src.utils.model_utils import YoloBackbone, EnhancedYoloBackbone
-    from ultralytics import YOLO
+    # Load PyTorch model
+    config = ModelConfig(
+        model_type=model_type,
+        model_path=pytorch_model_path,
+        input_shape=input_shape,
+        **kwargs
+    )
     
-    # Create PyTorch model with proper initialization
+    registry = ModelRegistry()
+    loader = registry.get_loader(model_type)
+    pytorch_model = loader.load_model(config)
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    if use_enhanced_yolo:
-        # Enhanced YOLO + ViT (for models trained with Enhanced YOLO)
-        logger.info("Using Enhanced YOLO backbone for benchmark")
-        yolo_model = YOLO('yolo11l-pose.pt')
-        backbone = EnhancedYoloBackbone(
-            yolo_model, 
-            include_neck=True,
-            selected_indices=[2, 4, 6, 8, 10, 13, 16, 19, 22]
-        )
-    else:
-        # Original YOLO + ViT (for models trained with original YOLO)
-        logger.info("Using Original YOLO backbone for benchmark")
-        yolo_model = YOLO('yolo11l-pose.pt')
-        backbone_seq = yolo_model.model.model[:12]
-        backbone = YoloBackbone(backbone_seq, selected_indices=[0,1,2,3,4,5,6,7,8,9,10,11])
-    
-    # Get input channels list
-    input_dummy = torch.randn(1, 3, 128, 128)
-    with torch.no_grad():
-        feats = backbone(input_dummy)
-    in_channels_list = [f.shape[1] for f in feats]
-    logger.info(f"Backbone features: {len(feats)}, Input channels: {in_channels_list}")
-    
-    # Create model
-    pytorch_model = HybridKeypointNet(backbone, in_channels_list)
-    
-    # Load state dict
-    state_dict = torch.load(pytorch_model_path, map_location=device)
-    
-    # Handle model state dict with _orig_mod prefixes
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        if key.startswith("_orig_mod."):
-            new_key = key[10:]  # Remove "_orig_mod." prefix
-            new_state_dict[new_key] = value
-        else:
-            new_state_dict[key] = value
-    
-    # Load with strict=False to handle any remaining mismatches
-    missing_keys, unexpected_keys = pytorch_model.load_state_dict(new_state_dict, strict=False)
-    if missing_keys:
-        logger.warning(f"Missing keys: {len(missing_keys)}")
-    if unexpected_keys:
-        logger.warning(f"Unexpected keys: {len(unexpected_keys)}")
-    
-    # Ensure model and inputs are on the same device
     pytorch_model = pytorch_model.to(device)
     pytorch_model.eval()
     
     # Load TensorRT model
-    tensorrt_inference = TensorRTInference(tensorrt_model_path)
+    tensorrt_inference = GeneralizedTensorRTInference(tensorrt_model_path)
     
     # Create dummy input
     dummy_input = np.random.randn(*input_shape).astype(np.float32)
@@ -456,6 +592,7 @@ def benchmark_tensorrt_vs_pytorch(
     speedup = pytorch_avg_time / tensorrt_avg_time
     
     results = {
+        'model_type': model_type,
         'pytorch': {
             'total_time': pytorch_time,
             'avg_inference_time': pytorch_avg_time,
@@ -472,63 +609,39 @@ def benchmark_tensorrt_vs_pytorch(
     return results
 
 
-def create_tensorrt_config(
-    model_path: str,
-    output_path: str,
-    precision: str = "fp16",
-    max_batch_size: int = 1,
-    workspace_size: int = 1 << 30
-) -> Dict[str, Any]:
-    """
-    Create TensorRT conversion configuration.
-    
-    Args:
-        model_path: Path to PyTorch model
-        output_path: Path to save TensorRT model
-        precision: Precision mode
-        max_batch_size: Maximum batch size
-        workspace_size: Workspace size in bytes
-        
-    Returns:
-        Configuration dictionary
-    """
-    return {
-        'model_path': model_path,
-        'output_path': output_path,
-        'precision': precision,
-        'max_batch_size': max_batch_size,
-        'workspace_size': workspace_size,
-        'input_shape': (max_batch_size, 3, 128, 128),
-        'dynamic_axes': {
-            'input': {0: 'batch_size'},
-            'output': {0: 'batch_size'}
-        }
-    }
-
-
 if __name__ == "__main__":
     # Example usage
     import argparse
     
-    parser = argparse.ArgumentParser(description="TensorRT conversion for keypoint detection model")
+    parser = argparse.ArgumentParser(description="Generalized TensorRT conversion")
+    parser.add_argument("--model_type", type=str, required=True, 
+                       choices=['hybrid_keypoint_net', 'clip_heatmap_model', 'efficient_keypoint_net'],
+                       help="Type of model to convert")
     parser.add_argument("--model_path", type=str, required=True, help="Path to PyTorch model")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save TensorRT model")
-    parser.add_argument("--precision", type=str, default="fp16", choices=["fp32", "fp16", "int8"], help="Precision mode")
+    parser.add_argument("--precision", type=str, default="fp16", choices=["fp32", "fp16", "int8"], 
+                       help="Precision mode")
+    parser.add_argument("--input_shape", type=int, nargs=4, default=[1, 3, 256, 256],
+                       help="Input shape (batch, channels, height, width)")
     parser.add_argument("--benchmark", action="store_true", help="Run benchmark after conversion")
     
     args = parser.parse_args()
     
     # Convert model
-    tensorrt_path = convert_keypoint_model_to_tensorrt(
+    tensorrt_path = convert_any_model_to_tensorrt(
+        model_type=args.model_type,
         model_path=args.model_path,
         output_path=args.output_path,
+        input_shape=tuple(args.input_shape),
         precision=args.precision
     )
     
     # Run benchmark if requested
     if args.benchmark:
-        results = benchmark_tensorrt_vs_pytorch(
+        results = benchmark_any_model(
+            model_type=args.model_type,
             pytorch_model_path=args.model_path,
-            tensorrt_model_path=tensorrt_path
+            tensorrt_model_path=tensorrt_path,
+            input_shape=tuple(args.input_shape)
         )
         print(f"Benchmark results: {results}")
