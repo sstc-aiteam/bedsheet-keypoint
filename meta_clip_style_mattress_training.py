@@ -62,8 +62,8 @@ DEFAULT_CONFIG = {
     "image_paths": [
         "image_data/mattress1"
     ],
-    "yolo_model_path": "models/yolo_finetuned/best.pt",
-    "allowed_classes": [0,1,2],  # mattress class
+    "yolo_model_path": "models/yolo_finetuned/best_2.pt",
+    "allowed_classes": [0,1,2,3],  # mattress class
     "image_size": 256,
     
     # Training configuration
@@ -268,14 +268,17 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                 img_resized, keypoints_resized = resize_image_and_keypoints(
                     img_rgb, keypoints, image_size, image_size
                 )
+                img_resized_bgr, _ = resize_image_and_keypoints(
+                    img, keypoints, image_size, image_size
+                )
                 
                 # Apply YOLO masking on the resized image if available
                 if yolo_model is not None:
                     try:
                         # Run YOLO inference on resized image
-                        results = yolo_model(img_resized, task="segment")
+                        results = yolo_model(img_resized_bgr)
                         if len(results) > 0 and results[0].masks is not None:
-                            # Create mask for mattress regions
+                            # Create mask for fitted_sheet regions
                             mask_all = np.zeros((image_size, image_size), dtype=np.uint8)
                             masks = results[0].masks.data.cpu().numpy()
                             classes = results[0].boxes.cls.cpu().numpy()
@@ -286,9 +289,8 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                                     mask = cv2.resize(mask, (image_size, image_size), interpolation=cv2.INTER_NEAREST)
                                     mask_all = cv2.bitwise_or(mask_all, (mask > 0.5).astype(np.uint8) * 255)
                             
-                            # Apply mask to image (set non-mattress regions to black)
-                            if np.any(mask_all > 0):
-                                img_resized[mask_all == 0] = 0
+                            # Apply mask to image (set non-fitted_sheet regions to black)
+                            img_resized[mask_all == 0] = 0
                                 
                     except Exception as e:
                         print(f"Warning: YOLO processing failed for {img_path}: {e}")

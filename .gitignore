@@ -257,6 +257,7 @@ secrets.json
 # Specific to this project
 bed-images/
 cloth_data_gen/output/
+cloth_data_gen/bedsheet_dataset_3000/
 realsense/realsense_data/
 realsense/realsense_data2/
 image_data/

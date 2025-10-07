@@ -27,7 +27,7 @@ class SimpleKeypointInference:
         Initialize inference demo.
         
         Args:
-            model_type: 'bedsheet' or 'mattress'
+            model_type: 'bedsheet' or 'mattress' or 'fitted_sheet'
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model_type = model_type
@@ -38,8 +38,13 @@ class SimpleKeypointInference:
             self.model_config = {
                 'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
             }
-        else:  # mattress
+        elif model_type == 'mattress':  # mattress
             self.model_path = 'models/meta_clip_style_mattress_post_original'
+            self.model_config = {
+                'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
+            }
+        elif model_type == 'fitted_sheet':  # fitted_sheet
+            self.model_path = 'models/meta_clip_style_fitted_sheet_post_original'
             self.model_config = {
                 'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
             }
@@ -74,7 +79,7 @@ class SimpleKeypointInference:
         print(f"✅ Loaded {self.model_type} model successfully")
         
         # Load YOLO model for segmentation (same as training)
-        yolo_path = 'models/yolo_finetuned/best.pt'
+        yolo_path = 'models/yolo_finetuned/best_2.pt'
         if os.path.exists(yolo_path):
             self.yolo_model = YOLO(yolo_path)
             print(f"✅ Loaded YOLO model from {yolo_path}")
@@ -101,11 +106,15 @@ class SimpleKeypointInference:
         mask_all = None
         if self.yolo_model is not None:
             try:
-                results = self.yolo_model(img_rgb, task="segment")
+                results = self.yolo_model(img_bgr, task="segment")
                 if len(results) > 0 and results[0].masks is not None:
                     # Get allowed classes based on model type
-                    allowed_classes = [2] if self.model_type == 'bedsheet' else [0, 1, 2]
-                    
+                    if self.model_type == "bedsheet":
+                        allowed_classes = [3]
+                    elif self.model_type == "mattress":
+                        allowed_classes = [0, 1, 2, 3]
+                    elif self.model_type == "fitted_sheet":
+                        allowed_classes = [1]
                     # Create mask for allowed regions
                     mask_all = np.zeros(original_size[::-1], dtype=np.uint8)  # (height, width)
                     masks = results[0].masks.data.cpu().numpy()
@@ -262,7 +271,7 @@ class SimpleKeypointInference:
 def main():
     """Main function for command line usage."""
     parser = argparse.ArgumentParser(description='Simple Meta CLIP Keypoint Detection Inference')
-    parser.add_argument('--model', choices=['bedsheet', 'mattress'], default='bedsheet',
+    parser.add_argument('--model', choices=['bedsheet', 'mattress', 'fitted_sheet'], default='bedsheet',
                        help='Model type to use')
     parser.add_argument('--image', required=True, help='Path to input image')
     parser.add_argument('--output', help='Output path for visualization')

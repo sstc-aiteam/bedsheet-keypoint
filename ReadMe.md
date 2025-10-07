@@ -9,8 +9,9 @@
 - **合成數據生成**：使用 Warp-lang 和 Blender 生成高品質的床單訓練數據
 - **兩階段訓練流程**：預訓練 + 後訓練優化，最大化模型性能
 - **參數高效微調**：使用 PEFT 和 LoRA 技術，節省 95% 記憶體
-- **即時推理優化**：支援 TensorRT 轉換，實現 2-5 倍推理加速
-- **全面數據處理**：YOLO 分割 + 關鍵點註解流程
+- **簡化推理演示**：提供簡潔的推理演示腳本，易於使用和部署
+- **全面數據處理**：YOLO 微調模型 + 關鍵點註解流程
+- **TensorRT 優化**：TensorRT 演示腳本（未來功能）
 
 ## 📁 專案結構
 
@@ -44,8 +45,9 @@ bedsheet-keypoint/
 ├── post_meta_clip_style_training.py               # Meta CLIP 後訓練腳本
 ├── compare_meta_clip_models.py                    # 模型比較工具
 ├── keypoint_detection_model_training.py           # 混合網路預訓練
-├── post_keypoint_detection_model_training.py      # 混合網路後訓練
-├── tensorrt_demo.py                               # TensorRT 演示
+├── post_keypoint_detection_model_training.py      # 混合網路後訓練（簡化版）
+├── inference_demo_simple.py                       # 簡化推理演示
+├── tensorrt_demo.py                               # TensorRT 演示（未來功能）
 └── requirements.txt                               # 依賴套件列表
 ```
 
@@ -185,23 +187,32 @@ python post_meta_clip_style_training.py --epochs 20
 # 第一階段：預訓練
 python keypoint_detection_model_training.py
 
-# 第二階段：後訓練優化
-python post_keypoint_detection_model_training.py config_quantization_fixed.json
+# 第二階段：後訓練優化（簡化版，無量化）
+python post_keypoint_detection_model_training.py
 ```
 
 #### 配置選項
-```json
-{
-    "model_name": "HybridKeypointNet",
-    "pretrained_model_path": "models/keypoint_model_vit.pth",
-    "yolo_model_path": "models/yolo_finetuned/best.pt",
-    "batch_size": 16,
-    "learning_rate": 0.001,
-    "num_epochs": 50,
-    "use_mixup": true,
-    "early_stopping_patience": 10
+```python
+DEFAULT_CONFIG = {
+    "yolo_model_path": "models/yolo_finetuned/best_2.pt",  # 使用微調的 YOLO 模型
+    "pretrained_path": "models/keypoint_model_vit.pth",
+    "batch_size": 32,
+    "learning_rate": 3e-5,
+    "num_epochs": 300,
+    "use_mixup": True,
+    "mixup_alpha": 0.2,
+    "early_stopping_patience": 20,
+    "use_augmentation": True,
+    "use_stronger_augmentation": True
 }
 ```
+
+#### 主要改進
+- **移除量化功能**：簡化訓練流程，專注於常規訓練
+- **添加驗證邏輯**：包含早停機制和訓練歷史追蹤
+- **Mixup 數據增強**：改善模型泛化能力
+- **移除主動學習**：使用所有樣本進行訓練
+- **訓練曲線可視化**：自動生成訓練和驗證損失圖表
 
 ### 2. Meta CLIP 關鍵點檢測模型（先進方法）
 
@@ -322,6 +333,33 @@ python post_meta_clip_style_training.py --disable_equal_params
 
 ## 🚀 部署
 
+### 簡化推理演示
+
+使用簡化的推理演示腳本進行快速測試：
+
+```bash
+# 基本推理演示
+python inference_demo_simple.py
+
+# 指定模型類型
+python inference_demo_simple.py --model_type bedsheet
+python inference_demo_simple.py --model_type mattress
+python inference_demo_simple.py --model_type fitted_sheet
+
+# 指定圖像目錄
+python inference_demo_simple.py --image_dir /path/to/images
+
+# 顯示詳細信息
+python inference_demo_simple.py --verbose
+```
+
+#### 推理演示特色
+- **簡潔易用**：少於 300 行代碼，易於理解和修改
+- **多模型支援**：支援床單、床墊、床笠三種模型類型
+- **YOLO 微調模型**：使用 `models/yolo_finetuned/best_2.pt` 進行精確分割
+- **即時視覺化**：自動生成關鍵點檢測結果圖像
+- **批量處理**：支援目錄批量推理
+
 ### 生產部署
 
 ```bash
@@ -331,24 +369,31 @@ python meta_clip_style_cloth_training.py
 # 完成後訓練
 python post_meta_clip_style_training.py --epochs 20
 
-# 部署模型進行推理
-python tensorrt_demo.py
+# 使用簡化推理演示
+python inference_demo_simple.py --model_type bedsheet
+```
+
+### TensorRT 優化（未來功能）
+
+```bash
+# TensorRT 演示（未來版本）
+python tensorrt_demo.py --pytorch_model models/meta_clip_style_bedsheet_post_pretrained
 ```
 
 ### 即時推理
 
 ```python
-import torch
-from src.models import ClipHeatmapModel
+from inference_demo_simple import SimpleKeypointInference
 
-# 載入訓練模型
-model = ClipHeatmapModel(...)
-model.load_state_dict(torch.load("models/meta_clip_style_bedsheet_post/complete_model.pth"))
-model.eval()
+# 創建推理實例
+inference = SimpleKeypointInference(model_type='bedsheet')
 
-# 執行推理
-with torch.no_grad():
-    output = model(input_tensor)
+# 載入圖像並進行推理
+image_path = "path/to/image.jpg"
+keypoints = inference.predict_keypoints(image_path)
+
+# 視覺化結果
+inference.visualize_keypoints(image_path, keypoints)
 ```
 
 ## 📝 使用範例
@@ -392,27 +437,35 @@ DEFAULT_CONFIG = {
 
 ### 計劃功能
 
-- **TensorRT 優化**：使用 TensorRT 轉換實現 2-5 倍更快的推理
+- **TensorRT 優化**：使用 TensorRT 轉換實現 2-5 倍更快的推理（`tensorrt_demo.py` 已準備就緒）
 - **量化支援**：INT8 量化用於邊緣部署
 - **模型匯出**：ONNX 和 TorchScript 匯出功能
 - **進階增強**：更複雜的數據增強策略
-- **主動學習**：不確定性採樣用於高效訓練
 - **多尺度檢測**：支援不同尺寸的床單檢測
+- **即時處理**：優化推理速度以支援即時應用
 
-### TensorRT 整合
+### TensorRT 整合（未來版本）
 
 ```bash
 # 轉換為 TensorRT 以優化推理
-python convert_to_tensorrt.py \
-    --model_path models/meta_clip_style_bedsheet_post \
-    --precision fp16 \
-    --test_inference
+python tensorrt_demo.py \
+    --pytorch_model models/meta_clip_style_bedsheet_post_pretrained \
+    --tensorrt_model models/bedsheet_model.trt \
+    --benchmark
 
 # 效能基準測試
-python test_tensorrt_inference.py \
-    --pytorch_model models/meta_clip_style_bedsheet_post \
-    --tensorrt_model models/meta_clip_style_bedsheet_post.trt
+python tensorrt_demo.py \
+    --pytorch_model models/meta_clip_style_bedsheet_post_pretrained \
+    --tensorrt_model models/bedsheet_model.trt \
+    --benchmark --num_runs 100
 ```
+
+### 當前狀態
+
+- ✅ **簡化推理演示**：`inference_demo_simple.py` 已實現並可用
+- ✅ **後訓練簡化**：`post_keypoint_detection_model_training.py` 已移除量化功能
+- ✅ **YOLO 微調模型**：使用 `models/yolo_finetuned/best.pt` 和 `best_2.pt`
+- 🔄 **TensorRT 演示**：`tensorrt_demo.py` 已準備，等待未來整合
 
 ## 🙏 致謝
 
