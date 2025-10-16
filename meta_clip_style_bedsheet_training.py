@@ -35,7 +35,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 
 # Import CLIP model and utilities
 from src.models import ClipHeatmapModel, create_clip_heatmap_model
-from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur
+from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
 # TensorRT utilities
@@ -50,7 +50,6 @@ except ImportError:
 DEFAULT_CONFIG = {
     # Model configuration
     "model_name": "facebook/metaclip-b16-fullcc2.5b",  # Meta CLIP model
-    "pretrained_model_path": "models/meta_clip_style_cloth",  # Path to pre-trained Meta CLIP model
     "use_original_metaclip": False,  # Set to True to use original Meta CLIP instead of pre-trained
     "ensure_equal_params": True,  # Ensure both models have identical trainable parameters
     "output_dir": "models/meta_clip_style_bedsheet_post",
@@ -61,8 +60,7 @@ DEFAULT_CONFIG = {
         "via_proj/bedsheets"
     ],
     "image_paths": [
-        "image_data/RGB-images",
-        "image_data/RGB-images2"
+        "image_data/RGB-images", "image_data/RGB-images2"
     ],
     "yolo_model_path": "models/yolo_finetuned/best_2.pt",
     "allowed_classes": [3],  # bedsheet class
@@ -84,10 +82,7 @@ DEFAULT_CONFIG = {
     "prior_prompts": [
         "a photo of a bedsheet corner",
         "bedsheet corner point",
-        "sharp bedsheet corner",
-        "textile edge corner",
-        "fabric fold corner",
-        "bedsheet seam corner"
+        "sharp bedsheet corner"
     ],
     "negative_prompts": [
         "smooth bedsheet surface",
@@ -296,7 +291,7 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                             
                             # Apply mask to image (set non-fitted_sheet regions to black)
                             img_resized[mask_all == 0] = 0
- 
+                                
                     except Exception as e:
                         print(f"Warning: YOLO processing failed for {img_path}: {e}")
                 
@@ -512,7 +507,7 @@ def train_meta_clip_post_model(model, train_loader, val_loader, config):
                 gt_blurred = batch_gaussian_blur(keypoints, kernel_size=min(k, 61), sigma=float(sigma))
                 
                 # Compute loss
-                loss = kl_heatmap_loss(pred_heatmaps, gt_blurred)
+                loss = kl_heatmap_loss(normalize_heatmaps(pred_heatmaps), gt_blurred)
             
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -540,7 +535,7 @@ def train_meta_clip_post_model(model, train_loader, val_loader, config):
                     k = int(6 * sigma + 1)
                     k = k if k % 2 == 1 else k + 1
                     gt_blurred = batch_gaussian_blur(keypoints, kernel_size=min(k, 61), sigma=float(sigma))
-                    loss = kl_heatmap_loss(pred_heatmaps, gt_blurred)
+                    loss = kl_heatmap_loss(normalize_heatmaps(pred_heatmaps), gt_blurred)
                     
                     val_loss += loss.item() * images.size(0)
             
@@ -629,18 +624,13 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             k = k if k % 2 == 1 else k + 1
             gt_blurred = batch_gaussian_blur(keypoints, kernel_size=min(k, 61), sigma=float(sigma))
             
-            test_loss = kl_heatmap_loss(pred_heatmaps, gt_blurred)
+            test_loss = kl_heatmap_loss(normalize_heatmaps(pred_heatmaps), gt_blurred)
             total_test_loss += test_loss.item()
             num_batches += 1
             
             # Get ground truth heatmap
             gt_heatmap = keypoints[0, 0].cpu().numpy()
-
-            # normalize the heatmap
-            if pred_heatmap.max() > 0.0005:
-                pred_heatmap = pred_heatmap / pred_heatmap.max()
-            else:
-                pred_heatmap = 0
+            
             # Calculate match rate using streamlined function
             match_result = calculate_keypoint_match_rate(
                 gt_heatmap, pred_heatmap,
@@ -652,7 +642,7 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             distances = match_result['distances']
             gt_keypoints = match_result['gt_keypoints']
             pred_keypoints = match_result['pred_keypoints']
-
+            
             total_gt_points += match_result['total_gt']
             matched_total += matched
             total_distances.extend(distances)

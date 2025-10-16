@@ -113,6 +113,24 @@ def batch_gaussian_blur(x, kernel_size=5, sigma=2.0):
         normalized = normalized.squeeze(1)
     return normalized
 
+def normalize_heatmaps(pred_heatmaps: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """
+    Normalize predicted heatmaps so each spatial map sums to 1.
+
+    Args:
+        pred_heatmaps: Tensor with shape [B, H, W] or [B, C, H, W]
+        eps: Small constant to avoid division by zero
+
+    Returns:
+        Tensor with same shape as input, normalized over the spatial dimensions.
+    """
+    if pred_heatmaps.dim() not in (3, 4):
+        raise ValueError(f"Expected 3D or 4D tensor, got shape {pred_heatmaps.shape}")
+
+    spatial_sum = pred_heatmaps.sum(dim=(-1, -2), keepdim=True)
+    normalized = pred_heatmaps / spatial_sum.clamp(min=eps)
+    return normalized
+
 def batch_entropy(pred_heatmaps):
     """
     pred_heatmaps: [B, C, H, W]

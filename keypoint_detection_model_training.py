@@ -40,7 +40,8 @@ from src.utils.model_utils import (
     EnhancedYoloBackbone, 
     batch_gaussian_blur, 
     batch_entropy, 
-    thresholded_locations
+    thresholded_locations,
+    normalize_heatmaps
 )
 
 # Import UNet if needed (commented out in original)
@@ -348,7 +349,7 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
                     selected_keypoints_blur = keypoints_blur[topk_idx]
 
                     # calculate loss
-                    loss = kl_heatmap_loss(selected_outputs, selected_keypoints_blur.unsqueeze(1))
+                    loss = kl_heatmap_loss(normalize_heatmaps(selected_outputs), selected_keypoints_blur.unsqueeze(1))
 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -371,7 +372,7 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
                     with autocast("cuda", dtype=torch.float16):
                         outputs = compiled_model(images)
                         keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
-                        vloss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                        vloss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
                     val_running_loss += vloss.item() * images.size(0)
                     print(f"Epoch {epoch+1}/{num_epochs} [Val {batch_idx+1}/{total_val_batches}] loss: {vloss.item():.4f}", end='\r')
             print()
@@ -415,7 +416,7 @@ def evaluate_model(model, testloader):
             with autocast("cuda", dtype=torch.float16):
                 outputs = model(images)
                 keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
-                loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                loss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
 
             # render the predicted keypoints on the image
             for img, kp in zip(images.cpu().numpy(), outputs.cpu().numpy()):

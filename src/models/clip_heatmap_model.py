@@ -73,8 +73,8 @@ class ClipHeatmapHead(nn.Module):
         x = self.block(x)
         x = self.out(x)
         # Ensure positive for KL loss
-        return spatial_softmax(x)
-
+        # return spatial_softmax(x)
+        return torch.sigmoid(x)
 
 class ClipHeatmapModel(nn.Module):
     """

@@ -34,7 +34,7 @@ class SimpleKeypointInference:
         
         # Model configurations
         if model_type == 'bedsheet':
-            self.model_path = 'models/meta_clip_style_bedsheet_post_pretrained'
+            self.model_path = 'models/meta_clip_style_bedsheet_post_original'
             self.model_config = {
                 'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
             }
@@ -175,8 +175,12 @@ class SimpleKeypointInference:
         # Convert to numpy (same as training: pred_heatmap = pred_heatmaps[0, 0].cpu().numpy())
         heatmap_np = heatmap.squeeze().cpu().numpy()
         
-        # normalize the heatmap
-        heatmap_np = heatmap_np / heatmap_np.max()
+        # # normalize the heatmap
+        # m = heatmap_np.max() if heatmap_np.size > 0 else 1.0
+        # if m > 0.0005:
+        #     heatmap_np = heatmap_np / m
+        # else:
+        #     heatmap_np = np.zeros_like(heatmap_np)
         
         # Extract keypoints using EXACT same method as training evaluation
         peaks = thresholded_locations(heatmap_np, threshold=0.3)

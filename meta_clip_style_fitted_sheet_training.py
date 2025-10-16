@@ -35,7 +35,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 
 # Import CLIP model and utilities
 from src.models import ClipHeatmapModel, create_clip_heatmap_model
-from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur
+from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
 # TensorRT utilities
@@ -507,7 +507,7 @@ def train_meta_clip_post_model(model, train_loader, val_loader, config):
                 gt_blurred = batch_gaussian_blur(keypoints, kernel_size=min(k, 61), sigma=float(sigma))
                 
                 # Compute loss
-                loss = kl_heatmap_loss(pred_heatmaps, gt_blurred)
+                loss = kl_heatmap_loss(normalize_heatmaps(pred_heatmaps), gt_blurred)
             
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -535,7 +535,7 @@ def train_meta_clip_post_model(model, train_loader, val_loader, config):
                     k = int(6 * sigma + 1)
                     k = k if k % 2 == 1 else k + 1
                     gt_blurred = batch_gaussian_blur(keypoints, kernel_size=min(k, 61), sigma=float(sigma))
-                    loss = kl_heatmap_loss(pred_heatmaps, gt_blurred)
+                    loss = kl_heatmap_loss(normalize_heatmaps(pred_heatmaps), gt_blurred)
                     
                     val_loss += loss.item() * images.size(0)
             
@@ -624,19 +624,13 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             k = k if k % 2 == 1 else k + 1
             gt_blurred = batch_gaussian_blur(keypoints, kernel_size=min(k, 61), sigma=float(sigma))
             
-            test_loss = kl_heatmap_loss(pred_heatmaps, gt_blurred)
+            test_loss = kl_heatmap_loss(normalize_heatmaps(pred_heatmaps), gt_blurred)
             total_test_loss += test_loss.item()
             num_batches += 1
             
             # Get ground truth heatmap
             gt_heatmap = keypoints[0, 0].cpu().numpy()
             
-            # normalize the heatmap
-            if pred_heatmap.max() > 0.0005:
-                pred_heatmap = pred_heatmap / pred_heatmap.max()
-            else:
-                pred_heatmap = 0
-
             # Calculate match rate using streamlined function
             match_result = calculate_keypoint_match_rate(
                 gt_heatmap, pred_heatmap,
