@@ -58,7 +58,7 @@ except Exception as e:
     PEFT_AVAILABLE = False
 
 # Project utils
-from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur
+from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 
 
 def set_seed(seed: int = 42):
@@ -88,69 +88,6 @@ def load_cloth_keypoints(keypoint_file: str) -> List[Dict]:
     except Exception as e:
         print(f"Error loading keypoints from {keypoint_file}: {e}")
     return keypoints
-
-
-def extract_keypoints_from_heatmap(heatmap: np.ndarray, max_keypoints: int = 4, min_distance: int = 20) -> List[Tuple[int, int]]:
-    """Extract keypoint coordinates from heatmap using intelligent detection."""
-    from scipy.ndimage import maximum_filter, gaussian_filter
-    import cv2
-    
-    smoothed_heatmap = gaussian_filter(heatmap, sigma=1.0)
-    max_val = smoothed_heatmap.max()
-    threshold = max(0.0005, max_val * 0.0005)
-    
-    # Local maxima detection
-    local_maxima = maximum_filter(smoothed_heatmap, size=7) == smoothed_heatmap
-    local_maxima = local_maxima & (smoothed_heatmap > threshold)
-    peak_coords = np.where(local_maxima)
-    peak_keypoints = [(int(x), int(y)) for y, x in zip(peak_coords[0], peak_coords[1])]
-    
-    # Contour-based detection
-    binary_map = (smoothed_heatmap > threshold).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(binary_map, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contour_keypoints = []
-    for contour in contours:
-        M = cv2.moments(contour)
-        if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            if 10 < cx < heatmap.shape[1] - 10 and 10 < cy < heatmap.shape[0] - 10:
-                contour_keypoints.append((cx, cy))
-    
-    # Top-k highest values
-    flat_indices = np.argsort(smoothed_heatmap.flatten())[-max_keypoints*2:]
-    top_k_coords = []
-    for idx in flat_indices:
-        y, x = np.unravel_index(idx, smoothed_heatmap.shape)
-        if smoothed_heatmap[y, x] > threshold:
-            if 10 < x < heatmap.shape[1] - 10 and 10 < y < heatmap.shape[0] - 10:
-                top_k_coords.append((x, y))
-    
-    # Combine and deduplicate
-    all_keypoints = peak_keypoints + contour_keypoints + top_k_coords
-    unique_keypoints = []
-    for kp in all_keypoints:
-        is_duplicate = False
-        for existing_kp in unique_keypoints:
-            if np.sqrt((kp[0] - existing_kp[0])**2 + (kp[1] - existing_kp[1])**2) < min_distance:
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            unique_keypoints.append(kp)
-    
-    # Sort by intensity and return top N
-    unique_keypoints.sort(key=lambda kp: smoothed_heatmap[kp[1], kp[0]], reverse=True)
-    
-    # Fallback: if no keypoints found, use top-k values
-    if len(unique_keypoints) == 0:
-        flat_indices = np.argsort(smoothed_heatmap.flatten())[-max_keypoints:]
-        for idx in flat_indices:
-            y, x = np.unravel_index(idx, smoothed_heatmap.shape)
-            if 10 < x < heatmap.shape[1] - 10 and 10 < y < heatmap.shape[0] - 10:
-                unique_keypoints.append((x, y))
-    
-    return unique_keypoints[:max_keypoints]
-
 
 class MetaClipClothHeatmapDataset(Dataset):
     def __init__(self, data_dir: str, image_size: int = 256, max_samples: int = None, augment: bool = True,
@@ -568,7 +505,7 @@ def train_meta_clip_heatmap():
                 k = int(6 * sigma + 1)
                 k = k if k % 2 == 1 else k + 1
                 gt_blur = batch_gaussian_blur(gt, kernel_size=min(k, 61), sigma=float(sigma))
-                loss = kl_heatmap_loss(pred, gt_blur, reduction='mean')
+                loss = kl_heatmap_loss(normalize_heatmaps(pred), gt_blur, reduction='mean')
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -608,7 +545,7 @@ def train_meta_clip_heatmap():
                 k = int(6 * sigma + 1)
                 k = k if k % 2 == 1 else k + 1
                 gt_blur = batch_gaussian_blur(gt, kernel_size=min(k, 61), sigma=float(sigma))
-                vloss = kl_heatmap_loss(pred, gt_blur, reduction='mean')
+                vloss = kl_heatmap_loss(normalize_heatmaps(pred), gt_blur, reduction='mean')
                 val_running += float(vloss.item()) * pix.size(0)
 
         val_loss = val_running / len(val_loader.dataset)
@@ -670,10 +607,6 @@ def train_meta_clip_heatmap():
             pred = eval_model(pix)  # (1,1,H,W)
             heat = pred.squeeze(0).squeeze(0).detach().cpu().numpy()
             m = heat.max() if heat.size > 0 else 1.0
-            if m > 0.0005:
-                heat = heat / m
-            else:
-                heat = 0
 
             peaks = thresholded_locations(heat, threshold=0.3)
             peaks_xy = [(int(p[1]), int(p[0])) for p in peaks]

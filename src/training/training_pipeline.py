@@ -31,7 +31,8 @@ from ..utils.model_utils import (
     batch_gaussian_blur,
     extract_mask_compare,
     thresholded_locations,
-    kl_heatmap_loss
+    kl_heatmap_loss,
+    normalize_heatmaps
 )
 
 # Quantization utilities removed - functionality deprecated
@@ -474,7 +475,7 @@ def train_model_functional(
                 
                 outputs = model(images)
                 keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
-                loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                loss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
                 val_loss += loss.item() * images.size(0)
         
         avg_val_loss = val_loss / len(val_loader.dataset)
@@ -537,11 +538,11 @@ def evaluate_model(
                 with autocast(device_type=device_type, dtype=torch.float16):
                     outputs = model(images)
                     keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
-                    loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                    loss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
             else:
                 outputs = model(images)
                 keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
-                loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                loss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
             
             val_loss += loss.item() * images.size(0)
             
@@ -608,7 +609,7 @@ def evaluate_quantized_model(
             # For quantized models, we need to ensure proper input format
             outputs = model(images)
             keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
-            loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+            loss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
             
             val_loss += loss.item() * images.size(0)
             

@@ -36,7 +36,8 @@ from src.utils import (
     extract_mask_compare,
     thresholded_locations,
     combine_nearby_peaks,
-    EnhancedYoloBackbone
+    EnhancedYoloBackbone,
+    normalize_heatmaps
 )
 from src.utils.model_utils import EnhancedYoloBackbone, batch_entropy
 from src.models import HybridKeypointNet
@@ -504,7 +505,7 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
                     keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
                     
                     # calculate loss on all samples (no active learning)
-                    loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                    loss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -529,7 +530,7 @@ def train_model(model, trainloader, valloader, testloader, num_epochs=300, load_
                     with autocast("cuda", dtype=torch.float16):
                         outputs = compiled_model(images)
                         keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
-                        loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                        loss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
                     
                     val_loss += loss.item() * images.size(0)
                     # Progress output
@@ -664,7 +665,7 @@ def evaluate_model(model, testloader, results_dir='results'):
             with autocast("cuda", dtype=torch.float16):
                 outputs = model(images)
                 keypoints_blur = batch_gaussian_blur(keypoints, kernel_size=31, sigma=3)
-                loss = kl_heatmap_loss(outputs, keypoints_blur.unsqueeze(1))
+                loss = kl_heatmap_loss(normalize_heatmaps(outputs), keypoints_blur.unsqueeze(1))
 
             # render the predicted keypoints on the original images
             for img, kp, orig_path in zip(images.cpu().numpy(), outputs.cpu().numpy(), file_paths):
