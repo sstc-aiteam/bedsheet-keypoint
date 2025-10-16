@@ -186,7 +186,7 @@ class SimpleKeypointInference:
         
         # Convert to keypoint format (same coordinate order as training: (x, y))
         # Use combined_peaks to reduce nearby duplicates
-        keypoints = [(int(p[1]), int(p[0])) for p in combined_peaks]
+        keypoints = [(p[1], p[0]) for p in combined_peaks]
         
         # Scale keypoints to original size
         scale_x = original_size[0] / heatmap_np.shape[1]
