@@ -2,9 +2,9 @@
 """
 Post-Processing Meta CLIP-Style Keypoint Detection Model Training
 
-This script implements post-training for the Meta CLIP heatmap model using bedsheet data.
+This script implements post-training for the Meta CLIP heatmap model using fitted_sheet data.
 It loads the pre-trained Meta CLIP model from cloth data and applies additional LoRA fine-tuning
-on real bedsheet images with keypoint annotations.
+on real fitted_sheet images with keypoint annotations.
 """
 
 import os
@@ -38,9 +38,6 @@ from src.models import ClipHeatmapModel, create_clip_heatmap_model
 from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
-# Import simple augmentation
-from src.augmentation.simple_lighting_color_augmentation import create_simple_lighting_color_augmentation
-
 # TensorRT utilities
 try:
     import tensorrt as trt
@@ -55,18 +52,18 @@ DEFAULT_CONFIG = {
     "model_name": "facebook/metaclip-b16-fullcc2.5b",  # Meta CLIP model
     "use_original_metaclip": False,  # Set to True to use original Meta CLIP instead of pre-trained
     "ensure_equal_params": True,  # Ensure both models have identical trainable parameters
-    "output_dir": "models/meta_clip_style_bedsheet_post",
-    "results_dir": "results_meta_clip_bedsheet_post",
+    "output_dir": "models/meta_clip_style_fitted_sheet_inverse_post",
+    "results_dir": "results_meta_clip_fitted_sheet_inverse_post",
     
     # Data configuration
     "keypoints_data_srcs": [
-        "via_proj/bedsheets"
+        "via_proj/fitted_sheets_inverse"
     ],
     "image_paths": [
-        "image_data/RGB-images", "image_data/RGB-images2"
+        "image_data/fitted_sheet_inverse1"
     ],
     "yolo_model_path": "models/yolo_finetuned/best_2.pt",
-    "allowed_classes": [3],  # bedsheet class
+    "allowed_classes": [1],  # fitted_sheet class
     "image_size": 256,
     
     # Training configuration
@@ -83,9 +80,9 @@ DEFAULT_CONFIG = {
     # Text prior configuration
     "use_text_prior": True,
     "prior_prompts": [
-        "a photo of a bedsheet corner",
-        "bedsheet corner point",
-        "sharp bedsheet corner"
+        "a photo of a fitted sheet corner",
+        "fitted sheet corner point",
+        "sharp fitted sheet corner"
     ],
     "negative_prompts": [
         "smooth bedsheet surface",
@@ -96,11 +93,9 @@ DEFAULT_CONFIG = {
     ],
     "prior_weight": 0.5,
     
-    # Enhanced augmentation configuration
+    # Augmentation configuration
     "use_augmentation": True,
-    "augmentation_intensity": "medium",  # 'light', 'medium', 'strong'
-    "use_lighting_augmentation": True,
-    "use_color_augmentation": True,
+    "use_stronger_augmentation": False,  # More conservative for post-training
     
     # Early stopping and saving
     "early_stopping_patience": 15,
@@ -132,7 +127,7 @@ def compute_sigma(H):
     return max(1.0, 0.03 * H)
 
 class BedsheetKeypointDataset(Dataset):
-    """Dataset for bedsheet keypoint detection with Meta CLIP normalization."""
+    """Dataset for fitted_sheet keypoint detection with Meta CLIP normalization."""
     
     def __init__(self, img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes, 
                  image_size=256, transform=None):
@@ -175,7 +170,7 @@ class BedsheetKeypointDataset(Dataset):
         }
 
 class BedsheetAugmentation:
-    """Augmentation for bedsheet keypoint detection."""
+    """Augmentation for fitted_sheet keypoint detection."""
     
     def __init__(self, image_size=256):
         self.image_size = image_size
@@ -213,14 +208,14 @@ class BedsheetAugmentation:
         return img_tensor, keypoints_tensor
 
 def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model, allowed_classes, image_size):
-    """Generate bedsheet dataset data with YOLO masking."""
+    """Generate fitted_sheet dataset data with YOLO masking."""
     img_arr = []
     rgb_img_arr = []
     keypoints_img_arr = []
     file_paths = []
     original_sizes = []
     
-    print("Loading bedsheet data...")
+    print("Loading fitted_sheet data...")
     
     for keypoints_src in keypoints_data_srcs:
         if not os.path.exists(keypoints_src):
@@ -314,7 +309,7 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                 file_paths.append(img_path)
                 original_sizes.append(original_size)
     
-    print(f"Loaded {len(img_arr)} bedsheet samples")
+    print(f"Loaded {len(img_arr)} fitted_sheet samples")
     return img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes
 
 def load_pretrained_meta_clip_model(config):
@@ -467,7 +462,7 @@ def load_pretrained_meta_clip_model(config):
         return model
 
 def train_meta_clip_post_model(model, train_loader, val_loader, config):
-    """Train Meta CLIP model on bedsheet data."""
+    """Train Meta CLIP model on fitted_sheet data."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     
@@ -729,12 +724,12 @@ def save_keypoint_visualization(image, pred_heatmap, gt_heatmap, pred_keypoints,
 def setup_model_directories(config: Dict[str, Any]) -> Dict[str, Any]:
     """Setup output directories based on model type (original vs pre-trained)."""
     if config.get('use_original_metaclip', False):
-        config['output_dir'] = "models/meta_clip_style_bedsheet_post_original"
-        config['results_dir'] = "results_meta_clip_bedsheet_post_original"
+        config['output_dir'] = "models/meta_clip_style_fitted_sheet_inverse_post_original"
+        config['results_dir'] = "results_meta_clip_fitted_sheet_inverse_post_original"
         print("Using original Meta CLIP model - output directories:")
     else:
-        config['output_dir'] = "models/meta_clip_style_bedsheet_post_pretrained"
-        config['results_dir'] = "results_meta_clip_bedsheet_post_pretrained"
+        config['output_dir'] = "models/meta_clip_style_fitted_sheet_inverse_post_pretrained"
+        config['results_dir'] = "results_meta_clip_fitted_sheet_inverse_post_pretrained"
         print("Using pre-trained Meta CLIP model - output directories:")
     
     print(f"  Output: {config['output_dir']}")
@@ -875,7 +870,7 @@ def compare_models_equal_params(config: Dict[str, Any]) -> bool:
 
 def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipHeatmapModel, Dict]:
     """
-    Main post-training pipeline for Meta CLIP model on bedsheet data.
+    Main post-training pipeline for Meta CLIP model on fitted_sheet data.
     
     Args:
         config: Configuration dictionary containing all training parameters
@@ -898,13 +893,14 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
     # Load YOLO model (if available)
     try:
         yolo_model_finetuned = YOLO(config["yolo_model_path"])
+        yolo_model_finetuned.to(device)
         print("YOLO model loaded for masking")
     except Exception as e:
         print(f"Warning: Could not load YOLO model: {e}")
         yolo_model_finetuned = None
     
-    # Generate bedsheet dataset
-    print("Generating bedsheet dataset...")
+    # Generate fitted_sheet dataset
+    print("Generating fitted_sheet dataset...")
     img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes = generate_bedsheet_dataset_data(
         config["keypoints_data_srcs"],
         config["image_paths"],
@@ -916,7 +912,7 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
     print(f"Bedsheet dataset generated: {len(img_arr)} samples")
     
     if len(img_arr) == 0:
-        raise ValueError("No bedsheet data found. Check your data paths and keypoint annotations.")
+        raise ValueError("No fitted_sheet data found. Check your data paths and keypoint annotations.")
     
     # Create base dataset without augmentation
     base_dataset = BedsheetKeypointDataset(
@@ -935,22 +931,15 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
         generator=torch.Generator().manual_seed(42)
     )
     
-    # Create datasets with simple augmentation
+    # Create datasets with proper splitting
     if config.get("use_augmentation", True):
-        augmentation_intensity = config.get("augmentation_intensity", "medium")
-        augmentation = create_simple_lighting_color_augmentation(
-            image_size=config["image_size"],
-            intensity=augmentation_intensity,
-            augmentation_type='bedsheet'
-        )
+        augmentation = BedsheetAugmentation(config["image_size"])
         train_dataset = BedsheetKeypointDataset(
             img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes,
             config["image_size"], transform=augmentation
         )
-        print(f"Using simple augmentation with {augmentation_intensity} intensity")
     else:
         train_dataset = base_dataset
-        print("No augmentation applied")
     
     # Create proper subsets using torch.utils.data.Subset
     train_subset = torch.utils.data.Subset(train_dataset, train_indices.indices)

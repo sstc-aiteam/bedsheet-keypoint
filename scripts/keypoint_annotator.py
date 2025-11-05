@@ -8,6 +8,7 @@ Features:
 - Right-click to remove keypoints
 - Reset button to clear all keypoints for current image
 - Save annotations in VIA project format
+- Load annotations from existing JSON config files
 - Navigate through images in a directory
 """
 
@@ -77,6 +78,10 @@ class KeypointAnnotator:
         # Output file selection
         ttk.Button(control_frame, text="Select Output File", 
                   command=self.select_output_file).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Load JSON config
+        ttk.Button(control_frame, text="Load JSON Config", 
+                  command=self.load_json_config).pack(side=tk.LEFT, padx=(0, 10))
         
         # Navigation controls
         nav_frame = ttk.Frame(control_frame)
@@ -166,6 +171,158 @@ class KeypointAnnotator:
         )
         if filename:
             self.output_file = filename
+            
+    def load_json_config(self):
+        """Load annotations from a JSON config file (VIA project format)."""
+        filename = filedialog.askopenfilename(
+            title="Load JSON Config",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if not filename:
+            return
+            
+        try:
+            with open(filename, 'r') as f:
+                config_data = json.load(f)
+            
+            # Check if it's a VIA project format
+            if not isinstance(config_data, dict):
+                messagebox.showerror("Error", "Invalid JSON format. Expected a dictionary.")
+                return
+            
+            # Try to load files from config if available
+            files_loaded = False
+            if "file" in config_data and config_data["file"]:
+                # Extract file information
+                file_list = []
+                for file_id, file_info in config_data["file"].items():
+                    if isinstance(file_info, dict) and "fname" in file_info:
+                        file_list.append((file_id, file_info["fname"]))
+                
+                # Try to find images based on filenames
+                if file_list:
+                    # Ask user if they want to load images
+                    response = messagebox.askyesno(
+                        "Load Images",
+                        f"Found {len(file_list)} file(s) in config. Would you like to search for these images?\n\n"
+                        "Click 'Yes' to search in the current directory or select a directory.\n"
+                        "Click 'No' to only load annotations."
+                    )
+                    
+                    if response:
+                        # Try to find images
+                        search_dir = filedialog.askdirectory(
+                            title="Select Directory to Search for Images"
+                        )
+                        if search_dir:
+                            image_paths = []
+                            search_path = Path(search_dir)
+                            
+                            # Search recursively for matching images
+                            for file_id, fname in file_list:
+                                found = False
+                                name_without_ext = Path(fname).stem
+                                
+                                # Try exact match first
+                                candidate = search_path / fname
+                                if candidate.exists() and candidate.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']:
+                                    image_paths.append((file_id, candidate))
+                                    found = True
+                                else:
+                                    # Try with extension variations
+                                    for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']:
+                                        candidate = search_path / f"{name_without_ext}{ext}"
+                                        if candidate.exists():
+                                            image_paths.append((file_id, candidate))
+                                            found = True
+                                            break
+                                    
+                                    # If still not found, search recursively
+                                    if not found:
+                                        for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']:
+                                            matches = list(search_path.rglob(f"{name_without_ext}{ext}"))
+                                            if matches:
+                                                image_paths.append((file_id, matches[0]))  # Take first match
+                                                found = True
+                                                break
+                            
+                            if image_paths:
+                                # Sort by file_id to maintain order
+                                image_paths.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 0)
+                                self.images = [path for _, path in image_paths]
+                                self.current_image_index = 0
+                                files_loaded = True
+                                messagebox.showinfo(
+                                    "Images Loaded",
+                                    f"Successfully loaded {len(self.images)} image(s)."
+                                )
+                            else:
+                                messagebox.showwarning(
+                                    "Images Not Found",
+                                    "Could not find matching images. Annotations will be loaded, but you'll need to load images manually."
+                                )
+            
+            # Load annotations from metadata
+            annotations_loaded = False
+            if "metadata" in config_data and config_data["metadata"]:
+                # Clear existing annotations
+                self.annotations = {}
+                
+                # Parse metadata
+                for metadata_id, metadata_info in config_data["metadata"].items():
+                    if isinstance(metadata_info, dict):
+                        vid = metadata_info.get("vid")  # video/image ID
+                        xy = metadata_info.get("xy", [])
+                        
+                        if vid and len(xy) >= 3:
+                            # VIA format: xy = [shape_id, x, y]
+                            x, y = float(xy[1]), float(xy[2])
+                            
+                            # Initialize list if needed
+                            if vid not in self.annotations:
+                                self.annotations[vid] = []
+                            
+                            # Add keypoint
+                            self.annotations[vid].append((int(x), int(y)))
+                            annotations_loaded = True
+                
+                if annotations_loaded:
+                    messagebox.showinfo(
+                        "Annotations Loaded",
+                        f"Successfully loaded annotations for {len(self.annotations)} image(s)."
+                    )
+            
+            # Set output file to the loaded config file
+            self.output_file = filename
+            
+            # Update UI if images were loaded
+            if files_loaded:
+                self.update_image_dropdown()
+                self.load_current_image()
+            elif annotations_loaded:
+                # Refresh current image if images are already loaded
+                if self.images:
+                    self.load_current_image()
+                    messagebox.showinfo(
+                        "Config Loaded",
+                        f"Annotations loaded successfully for {len(self.annotations)} image(s). Current image refreshed."
+                    )
+                else:
+                    messagebox.showinfo(
+                        "Config Loaded",
+                        "Annotations loaded successfully. Please load images manually to view them."
+                    )
+            else:
+                messagebox.showwarning(
+                    "No Data Found",
+                    "The config file doesn't contain file or metadata information."
+                )
+                
+        except json.JSONDecodeError as e:
+            messagebox.showerror("Error", f"Failed to parse JSON file: {e}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load config: {e}")
             
     def load_images(self):
         """Load all images from the selected directory."""

@@ -79,7 +79,7 @@ class SimpleKeypointInference:
         print(f"✅ Loaded {self.model_type} model successfully")
         
         # Load YOLO model for segmentation (same as training)
-        yolo_path = 'models/yolo_finetuned/best_2.pt'
+        yolo_path = 'models/yolo_finetuned/sheet_without_plastic.v7i.yolov11/runs/segment/train/weights/best.pt'
         if os.path.exists(yolo_path):
             self.yolo_model = YOLO(yolo_path)
             print(f"✅ Loaded YOLO model from {yolo_path}")
@@ -106,13 +106,13 @@ class SimpleKeypointInference:
         mask_all = None
         if self.yolo_model is not None:
             try:
-                results = self.yolo_model(img_bgr, task="segment")
+                results = self.yolo_model(img_rgb, task="segment")
                 if len(results) > 0 and results[0].masks is not None:
                     # Get allowed classes based on model type
                     if self.model_type == "bedsheet":
                         allowed_classes = [3]
                     elif self.model_type == "mattress":
-                        allowed_classes = [0, 1, 2, 3]
+                        allowed_classes = [0, 1, 2, 3, 4, 5, 6]
                     elif self.model_type == "fitted_sheet":
                         allowed_classes = [1]
                     # Create mask for allowed regions
@@ -146,6 +146,12 @@ class SimpleKeypointInference:
             mask_resized = cv2.resize(mask_all, (target_size, target_size), interpolation=cv2.INTER_NEAREST)
             # Apply mask to resized image
             image_array[mask_resized == 0] = 0
+        plt.imshow(image_array)
+        plt.show()
+        test_image = img_rgb.copy()
+        test_image[mask_all == 0] = 0
+        plt.imshow(test_image)
+        plt.show()
         
         # No normalization applied (use raw pixel values)
         

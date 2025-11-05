@@ -45,6 +45,9 @@ from src.models.efficient_keypoint_net import EfficientViTKeypointNet
 from src.utils import kl_heatmap_loss
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
+# Import enhanced augmentation
+from src.augmentation.lighting_color_augmentation import create_lighting_color_augmentation
+
 # TensorRT utilities
 try:
     from src.utils.tensorrt_utils import (
@@ -802,15 +805,16 @@ def main_training_pipeline(config: Dict[str, Any]) -> Tuple[Any, Dict[str, List[
     
     print(f"Dataset generated: {len(img_arr)} samples")
     
-    # Create datasets with augmentation
-    # Apply augmentation if enabled
+    # Create datasets with enhanced augmentation
+    # Apply enhanced augmentation if enabled
     if config.get("use_augmentation", True):
-        if config.get("use_stronger_augmentation", True):
-            train_transform = StrongerAugmentation()
-            print("Using stronger augmentation to prevent overfitting")
-        else:
-            train_transform = MinimalAugmentation()
-            print("Using minimal augmentation")
+        augmentation_intensity = config.get("augmentation_intensity", "medium")
+        train_transform = create_lighting_color_augmentation(
+            image_size=config.get("image_size", 128),
+            intensity=augmentation_intensity,
+            augmentation_type='cloth'  # Use cloth augmentation for general keypoint detection
+        )
+        print(f"Using enhanced augmentation with {augmentation_intensity} intensity")
     else:
         train_transform = None
         print("No augmentation applied")

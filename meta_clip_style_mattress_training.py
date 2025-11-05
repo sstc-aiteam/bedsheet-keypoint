@@ -38,6 +38,9 @@ from src.models import ClipHeatmapModel, create_clip_heatmap_model
 from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
+# Import simple augmentation
+from src.augmentation.simple_lighting_color_augmentation import create_simple_lighting_color_augmentation
+
 # TensorRT utilities
 try:
     import tensorrt as trt
@@ -60,10 +63,10 @@ DEFAULT_CONFIG = {
         "via_proj/mattress"
     ],
     "image_paths": [
-        "image_data/mattress1"
+        "image_data/mattress1", "image_data/mattress2"
     ],
-    "yolo_model_path": "models/yolo_finetuned/best_2.pt",
-    "allowed_classes": [0,1,2,3],  # mattress class
+    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v7i.yolov11/runs/segment/train/weights/best.pt",
+    "allowed_classes": [0,1,2,3,4,5,6],  # mattress class
     "image_size": 256,
     
     # Training configuration
@@ -93,9 +96,11 @@ DEFAULT_CONFIG = {
     ],
     "prior_weight": 0.5,
     
-    # Augmentation configuration
+    # Enhanced augmentation configuration
     "use_augmentation": True,
-    "use_stronger_augmentation": False,  # More conservative for post-training
+    "augmentation_intensity": "medium",  # 'light', 'medium', 'strong'
+    "use_lighting_augmentation": True,
+    "use_color_augmentation": True,
     
     # Early stopping and saving
     "early_stopping_patience": 15,
@@ -268,15 +273,11 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                 img_resized, keypoints_resized = resize_image_and_keypoints(
                     img_rgb, keypoints, image_size, image_size
                 )
-                img_resized_bgr, _ = resize_image_and_keypoints(
-                    img, keypoints, image_size, image_size
-                )
-                
                 # Apply YOLO masking on the resized image if available
                 if yolo_model is not None:
                     try:
                         # Run YOLO inference on resized image
-                        results = yolo_model(img_resized_bgr)
+                        results = yolo_model(img_resized)
                         if len(results) > 0 and results[0].masks is not None:
                             # Create mask for fitted_sheet regions
                             mask_all = np.zeros((image_size, image_size), dtype=np.uint8)
@@ -930,15 +931,22 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
         generator=torch.Generator().manual_seed(42)
     )
     
-    # Create datasets with proper splitting
+    # Create datasets with enhanced augmentation
     if config.get("use_augmentation", True):
-        augmentation = BedsheetAugmentation(config["image_size"])
+        augmentation_intensity = config.get("augmentation_intensity", "medium")
+        augmentation = create_simple_lighting_color_augmentation(
+            image_size=config["image_size"],
+            intensity=augmentation_intensity,
+            augmentation_type='mattress'
+        )
         train_dataset = BedsheetKeypointDataset(
             img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes,
             config["image_size"], transform=augmentation
         )
+        print(f"Using enhanced augmentation with {augmentation_intensity} intensity")
     else:
         train_dataset = base_dataset
+        print("No augmentation applied")
     
     # Create proper subsets using torch.utils.data.Subset
     train_subset = torch.utils.data.Subset(train_dataset, train_indices.indices)

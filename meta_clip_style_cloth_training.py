@@ -43,6 +43,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 # Import CLIP model from src.models
 from src.models import ClipHeatmapModel, ClipHeatmapHead, create_clip_heatmap_model
 
+# Import simple augmentation
+from src.augmentation.simple_lighting_color_augmentation import create_simple_lighting_color_augmentation
+
 try:
     from transformers import CLIPModel, AutoTokenizer
     HF_AVAILABLE = True
@@ -155,9 +158,14 @@ class MetaClipClothHeatmapDataset(Dataset):
             'gt_points': gt_keypoints,
         }
 
-        # Apply heatmap-based augmentation if enabled
+        # Apply simple augmentation if enabled
         if self.augment:
-            augmentation = ClothAugmentation(self.image_size)
+            # Use simple augmentation with lighting and color variations
+            augmentation = create_simple_lighting_color_augmentation(
+                image_size=self.image_size,
+                intensity='medium',  # Can be 'light', 'medium', 'strong'
+                augmentation_type='cloth'
+            )
             sample = augmentation(sample)
 
         return sample
@@ -381,6 +389,12 @@ def train_meta_clip_heatmap():
         'early_stopping_patience': 15,  # Increased patience for longer training
         'splits': {'train': 0.8, 'val': 0.1, 'test': 0.1},
         'results_dir': 'results_meta_clip',
+        
+        # Enhanced augmentation configuration
+        'use_augmentation': True,
+        'augmentation_intensity': 'medium',  # 'light', 'medium', 'strong'
+        'use_lighting_augmentation': True,
+        'use_color_augmentation': True,
     }
 
     config = adjust_for_vram(config)

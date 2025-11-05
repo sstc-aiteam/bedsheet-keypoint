@@ -44,6 +44,9 @@ from src.utils.model_utils import (
     normalize_heatmaps
 )
 
+# Import enhanced augmentation
+from src.augmentation.lighting_color_augmentation import create_lighting_color_augmentation
+
 # Import UNet if needed (commented out in original)
 # from models.unet import UNet
 
@@ -460,9 +463,15 @@ def main():
     img_arr, keypoints_img_arr = load_data()
     print(f"Loaded {len(img_arr)} images with keypoints")
     
-    # Create datasets
+    # Create datasets with enhanced augmentation
     print("Creating datasets...")
-    rotate_transform = RandomRotateFlip()
+    
+    # Use enhanced augmentation instead of basic rotation/flip
+    enhanced_transform = create_lighting_color_augmentation(
+        image_size=128,  # Default image size for this model
+        intensity='medium',
+        augmentation_type='cloth'  # Use cloth augmentation for general keypoint detection
+    )
     
     # Create the full dataset without transform
     full_dataset = KeypointDataset(img_arr, keypoints_img_arr, transform=None)
@@ -474,8 +483,8 @@ def main():
     test_size = total_len - train_size - val_size
     train_indices, val_indices, test_indices = torch.utils.data.random_split(range(total_len), [train_size, val_size, test_size])
     
-    # Create datasets with transforms
-    train_dataset = torch.utils.data.Subset(KeypointDataset(img_arr, keypoints_img_arr, transform=rotate_transform), train_indices)
+    # Create datasets with enhanced transforms
+    train_dataset = torch.utils.data.Subset(KeypointDataset(img_arr, keypoints_img_arr, transform=enhanced_transform), train_indices)
     val_dataset = torch.utils.data.Subset(KeypointDataset(img_arr, keypoints_img_arr, transform=None), val_indices)
     test_dataset = torch.utils.data.Subset(KeypointDataset(img_arr, keypoints_img_arr, transform=None), test_indices)
     

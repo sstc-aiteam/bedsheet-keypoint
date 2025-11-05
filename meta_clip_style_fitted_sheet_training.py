@@ -38,6 +38,9 @@ from src.models import ClipHeatmapModel, create_clip_heatmap_model
 from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
+# Import simple augmentation
+from src.augmentation.simple_lighting_color_augmentation import create_simple_lighting_color_augmentation
+
 # TensorRT utilities
 try:
     import tensorrt as trt
@@ -93,9 +96,11 @@ DEFAULT_CONFIG = {
     ],
     "prior_weight": 0.5,
     
-    # Augmentation configuration
+    # Enhanced augmentation configuration
     "use_augmentation": True,
-    "use_stronger_augmentation": False,  # More conservative for post-training
+    "augmentation_intensity": "medium",  # 'light', 'medium', 'strong'
+    "use_lighting_augmentation": True,
+    "use_color_augmentation": True,
     
     # Early stopping and saving
     "early_stopping_patience": 15,
@@ -931,15 +936,22 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
         generator=torch.Generator().manual_seed(42)
     )
     
-    # Create datasets with proper splitting
+    # Create datasets with enhanced augmentation
     if config.get("use_augmentation", True):
-        augmentation = BedsheetAugmentation(config["image_size"])
+        augmentation_intensity = config.get("augmentation_intensity", "medium")
+        augmentation = create_simple_lighting_color_augmentation(
+            image_size=config["image_size"],
+            intensity=augmentation_intensity,
+            augmentation_type='fitted_sheet'
+        )
         train_dataset = BedsheetKeypointDataset(
             img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes,
             config["image_size"], transform=augmentation
         )
+        print(f"Using enhanced augmentation with {augmentation_intensity} intensity")
     else:
         train_dataset = base_dataset
+        print("No augmentation applied")
     
     # Create proper subsets using torch.utils.data.Subset
     train_subset = torch.utils.data.Subset(train_dataset, train_indices.indices)
