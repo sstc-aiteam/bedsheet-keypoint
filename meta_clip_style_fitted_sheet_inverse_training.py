@@ -60,10 +60,10 @@ DEFAULT_CONFIG = {
         "via_proj/fitted_sheets_inverse"
     ],
     "image_paths": [
-        "image_data/fitted_sheet_inverse1"
+        "image_data/床包背面2"
     ],
-    "yolo_model_path": "models/yolo_finetuned/best_2.pt",
-    "allowed_classes": [1],  # fitted_sheet class
+    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v8i.yolov11/runs/segment/train/weights/best.pt",
+    "allowed_classes": [1,3],  # fitted_sheet class
     "image_size": 256,
     
     # Training configuration

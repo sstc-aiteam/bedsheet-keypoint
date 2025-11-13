@@ -79,7 +79,7 @@ class SimpleKeypointInference:
         print(f"✅ Loaded {self.model_type} model successfully")
         
         # Load YOLO model for segmentation (same as training)
-        yolo_path = 'models/yolo_finetuned/sheet_without_plastic.v7i.yolov11/runs/segment/train/weights/best.pt'
+        yolo_path = 'models/yolo_finetuned/sheet_without_plastic.v8i.yolov11/runs/segment/train/weights/best.pt'
         if os.path.exists(yolo_path):
             self.yolo_model = YOLO(yolo_path)
             print(f"✅ Loaded YOLO model from {yolo_path}")
@@ -110,11 +110,11 @@ class SimpleKeypointInference:
                 if len(results) > 0 and results[0].masks is not None:
                     # Get allowed classes based on model type
                     if self.model_type == "bedsheet":
-                        allowed_classes = [3]
+                        allowed_classes = [1,3]
                     elif self.model_type == "mattress":
-                        allowed_classes = [0, 1, 2, 3, 4, 5, 6]
+                        allowed_classes = [0, 1, 2, 3]
                     elif self.model_type == "fitted_sheet":
-                        allowed_classes = [1]
+                        allowed_classes = [1,3]
                     # Create mask for allowed regions
                     mask_all = np.zeros(original_size[::-1], dtype=np.uint8)  # (height, width)
                     masks = results[0].masks.data.cpu().numpy()

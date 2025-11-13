@@ -65,7 +65,7 @@ DEFAULT_CONFIG = {
     "image_paths": [
         "image_data/fitted_sheet1"
     ],
-    "yolo_model_path": "models/yolo_finetuned/best_2.pt",
+    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v10i.yolov11/runs/segment/train/weights/best.pt",
     "allowed_classes": [1],  # fitted_sheet class
     "image_size": 256,
     
@@ -273,15 +273,12 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                 img_resized, keypoints_resized = resize_image_and_keypoints(
                     img_rgb, keypoints, image_size, image_size
                 )
-                img_resized_bgr, _ = resize_image_and_keypoints(
-                    img, keypoints, image_size, image_size
-                )
                 
                 # Apply YOLO masking on the resized image if available
                 if yolo_model is not None:
                     try:
                         # Run YOLO inference on resized image
-                        results = yolo_model(img_resized_bgr)
+                        results = yolo_model(img_resized)
                         if len(results) > 0 and results[0].masks is not None:
                             # Create mask for fitted_sheet regions
                             mask_all = np.zeros((image_size, image_size), dtype=np.uint8)
