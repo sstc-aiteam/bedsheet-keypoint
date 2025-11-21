@@ -65,8 +65,8 @@ DEFAULT_CONFIG = {
     "image_paths": [
         "image_data/mattress1", "image_data/mattress2"
     ],
-    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v7i.yolov11/runs/segment/train/weights/best.pt",
-    "allowed_classes": [0,1,2,3,4,5,6],  # mattress class
+    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v10i.yolov11/runs/segment/train/weights/best.pt",
+    "allowed_classes": [0,1,2,3],  # mattress class
     "image_size": 256,
     
     # Training configuration

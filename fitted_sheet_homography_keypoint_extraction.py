@@ -141,38 +141,48 @@ def is_convex_polygon(points: np.ndarray) -> bool:
     return True
 
 
-def clip_polygon_with_convex(subject: np.ndarray, clip: np.ndarray) -> np.ndarray:
-    def inside(p, a, b):
-        return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0
-
-    def compute_intersection(p1, p2, a, b):
-        s1 = p2 - p1
-        s2 = b - a
-        denom = s1[0] * s2[1] - s2[0] * s1[1]
-        if abs(denom) < 1e-9:
-            return p2
-        t = ((a[0] - p1[0]) * s2[1] - (a[1] - p1[1]) * s2[0]) / denom
-        return p1 + t * s1
-
-    output = subject.copy()
-    for i in range(len(clip)):
-        input_list = output.copy()
-        if len(input_list) == 0:
-            break
-        output = []
-        A = clip[i]
-        B = clip[(i + 1) % len(clip)]
-        for j in range(len(input_list)):
-            P = input_list[j]
-            Q = input_list[(j + 1) % len(input_list)]
-            if inside(Q, A, B):
-                if not inside(P, A, B):
-                    output.append(compute_intersection(P, Q, A, B))
-                output.append(Q)
-            elif inside(P, A, B):
-                output.append(compute_intersection(P, Q, A, B))
-        output = np.array(output, dtype=np.float32)
-    return output
+def compute_polygon_intersection_area(subject: np.ndarray, clip: np.ndarray) -> float:
+    """
+    Compute intersection area between two polygons using mask-based method.
+    This is more reliable than polygon clipping for area calculation.
+    """
+    # Get bounding box that contains both polygons
+    all_points = np.vstack([subject, clip])
+    min_x, min_y = all_points.min(axis=0)
+    max_x, max_y = all_points.max(axis=0)
+    
+    # Add padding to ensure we capture everything
+    padding = 10
+    min_x = int(min_x) - padding
+    min_y = int(min_y) - padding
+    max_x = int(max_x) + padding
+    max_y = int(max_y) + padding
+    
+    width = max_x - min_x
+    height = max_y - min_y
+    
+    if width <= 0 or height <= 0:
+        return 0.0
+    
+    # Create masks for both polygons
+    mask_subject = np.zeros((height, width), dtype=np.uint8)
+    mask_clip = np.zeros((height, width), dtype=np.uint8)
+    
+    # Shift coordinates to mask space
+    subject_shifted = (subject - [min_x, min_y]).astype(np.int32)
+    clip_shifted = (clip - [min_x, min_y]).astype(np.int32)
+    
+    # Fill polygons in masks
+    cv2.fillPoly(mask_subject, [subject_shifted.reshape(-1, 1, 2)], 255)
+    cv2.fillPoly(mask_clip, [clip_shifted.reshape(-1, 1, 2)], 255)
+    
+    # Compute intersection using bitwise AND
+    intersection_mask = cv2.bitwise_and(mask_subject, mask_clip)
+    
+    # Calculate area (number of white pixels)
+    intersection_area = np.sum(intersection_mask > 0)
+    
+    return float(intersection_area)
 
 
 def quad_iou(candidate: np.ndarray, subject_polygon: np.ndarray, subject_area: float) -> Tuple[float, Optional[np.ndarray]]:
@@ -188,17 +198,14 @@ def quad_iou(candidate: np.ndarray, subject_polygon: np.ndarray, subject_area: f
     if polygon_area(candidate) < 1.0 or not is_convex_polygon(candidate):
         return -1.0, None
 
-    clipped = clip_polygon_with_convex(subject_polygon, candidate)
-    if len(clipped) < 3:
+    # Compute intersection area using mask-based method
+    inter_area = compute_polygon_intersection_area(subject_polygon, candidate)
+    
+    if inter_area <= 0:
         return -1.0, None
-
-    inter_area = polygon_area(clipped)
-    quad_area = polygon_area(candidate)
-    union = subject_area + quad_area - inter_area
-    if union <= 0:
-        return -1.0, None
-    iou = inter_area / union
-    return iou, candidate
+    
+    # Return intersection area instead of IoU
+    return inter_area, candidate
 
 
 def search_best_quad(points: np.ndarray, subject_polygon: np.ndarray, subject_area: float) -> Optional[np.ndarray]:
@@ -218,7 +225,8 @@ def search_best_quad(points: np.ndarray, subject_polygon: np.ndarray, subject_ar
                     if score > best_score and quad is not None:
                         best_score = score
                         best_quad = quad
-                    if best_score >= 0.99:
+                    # Early exit if intersection area is very close to subject area (near-perfect match)
+                    if subject_area > 0 and best_score >= 0.99 * subject_area:
                         return best_quad
 
     return best_quad

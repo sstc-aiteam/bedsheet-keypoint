@@ -60,10 +60,11 @@ DEFAULT_CONFIG = {
         "via_proj/fitted_sheets_inverse"
     ],
     "image_paths": [
-        "image_data/床包背面2"
+        "image_data/床包背面2",
+        "image_data/20251119_RealSenseOnRobotHead_床包背面鈕扣"
     ],
-    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v8i.yolov11/runs/segment/train/weights/best.pt",
-    "allowed_classes": [1,3],  # fitted_sheet class
+    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v10i.yolov11/runs/segment/train/weights/best.pt",
+    "allowed_classes": [1],  # fitted_sheet class
     "image_size": 256,
     
     # Training configuration

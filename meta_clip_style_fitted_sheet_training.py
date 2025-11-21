@@ -63,7 +63,8 @@ DEFAULT_CONFIG = {
         "via_proj/fitted_sheets"
     ],
     "image_paths": [
-        "image_data/fitted_sheet1"
+        "image_data/fitted_sheet1", 
+        "image_data/fitted_sheet2"
     ],
     "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v10i.yolov11/runs/segment/train/weights/best.pt",
     "allowed_classes": [1],  # fitted_sheet class
