@@ -6,6 +6,28 @@ import torchvision.transforms.functional as TF
 import numpy as np
 import cv2
 
+try:
+    import timm
+    TIMM_AVAILABLE = True
+except ImportError:
+    TIMM_AVAILABLE = False
+    print("Warning: timm not available. Install with: pip install timm")
+
+try:
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    SAM2_AVAILABLE = True
+except ImportError:
+    SAM2_AVAILABLE = False
+    print("Warning: sam2 not available. Install with: pip install git+https://github.com/facebookresearch/segment-anything-2.git")
+
+try:
+    from transformers import AutoModel, AutoImageProcessor
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    print("Warning: transformers not available. Install with: pip install transformers")
+
 class YoloBackbone(nn.Module):
     def __init__(self, backbone_seq, selected_indices=None):
         super().__init__()
@@ -33,6 +55,212 @@ class YoloBackbone(nn.Module):
                 else:
                     feats.append(out)
         return feats
+
+
+class HRNetBackbone(nn.Module):
+    """
+    HRNet backbone wrapper for keypoint detection.
+    Extracts multi-scale features from HRNet model.
+    """
+    def __init__(self, model_name: str = "hrnet_w18.ms_aug_in1k", pretrained: bool = True):
+        super().__init__()
+        if not TIMM_AVAILABLE:
+            raise ImportError("timm is required for HRNet backbone. Install with: pip install timm")
+        
+        # Load HRNet from timm
+        self.model = timm.create_model(model_name, pretrained=pretrained, features_only=True)
+        
+        # Get feature info
+        self.feature_info = self.model.feature_info
+        
+    def forward(self, x):
+        """
+        Forward pass through HRNet.
+        
+        Args:
+            x: Input tensor (B, 3, H, W)
+            
+        Returns:
+            List of feature maps at different scales
+        """
+        features = self.model(x)
+        return features
+
+
+class SAM2Backbone(nn.Module):
+    """
+    SAM2 backbone wrapper for keypoint detection.
+    Uses SAM2's image encoder as a feature extractor.
+    """
+    def __init__(self, model_cfg: str = "sam2_hiera_large.yaml", checkpoint: str = None, device: str = "cuda"):
+        super().__init__()
+        if not SAM2_AVAILABLE:
+            raise ImportError("sam2 is required for SAM2 backbone. Install with: pip install git+https://github.com/facebookresearch/segment-anything-2.git")
+        
+        self.device = device
+        
+        # Build SAM2 model
+        self.sam2_model = build_sam2(model_cfg, checkpoint, device=device)
+        # Extract image encoder
+        self.image_encoder = self.sam2_model.image_encoder
+        self.image_encoder.eval()  # Set to eval mode for inference
+        
+        # SAM2 image encoder outputs features
+        # The encoder typically outputs at 1/16 resolution
+        
+    def forward(self, x):
+        """
+        Forward pass through SAM2 image encoder.
+        
+        Args:
+            x: Input tensor (B, 3, H, W), should be normalized to [0, 1]
+            
+        Returns:
+            List containing the final feature map
+        """
+        # SAM2 image encoder expects input in [0, 1] range
+        # Ensure input is on correct device
+        if x.device != self.device:
+            x = x.to(self.device)
+        
+        # Forward through image encoder
+        # SAM2 encoder may return a tuple or single tensor
+        with torch.set_grad_enabled(self.training):
+            features = self.image_encoder(x)
+        
+        # Handle different return types
+        if isinstance(features, (list, tuple)):
+            # Use the last feature map
+            features = features[-1]
+        
+        # Return as list for consistency with other backbones
+        return [features]
+
+
+class CTMBackbone(nn.Module):
+    """
+    CTM-ImageNet backbone wrapper for keypoint detection.
+    Uses the full Continuous Thought Machine architecture with iterative reasoning.
+    """
+    def __init__(self, model_name: str = "SakanaAI/ctm-imagenet", pretrained: bool = True):
+        super().__init__()
+        try:
+            from src.models.ctm import ContinuousThoughtMachine
+        except ImportError:
+            raise ImportError("CTM models are required. Make sure src/models/ctm is available.")
+        
+        self.model_name = model_name
+        self.pretrained = pretrained
+        
+        # CTM ImageNet config parameters (from config.json)
+        ctm_config = {
+            'iterations': 50,
+            'd_model': 4096,
+            'd_input': 1024,
+            'heads': 16,
+            'n_synch_out': 8196,
+            'n_synch_action': 2048,
+            'synapse_depth': 8,
+            'memory_length': 25,
+            'deep_nlms': True,
+            'memory_hidden_dims': 64,
+            'do_layernorm_nlm': False,
+            'backbone_type': 'resnet152-4',
+            'positional_embedding_type': 'none',
+            'out_dims': 1000,  # ImageNet classes, but we'll extract sync features
+            'prediction_reshaper': [-1],
+            'dropout': 0,
+            'dropout_nlm': None,
+            'neuron_select_type': 'random-pairing',
+            'n_random_pairing_self': 32,
+        }
+        
+        # Load CTM model
+        if pretrained:
+            print(f"Loading pretrained CTM model from {model_name}...")
+            try:
+                self.ctm_model = ContinuousThoughtMachine.from_pretrained(
+                    model_name,
+                    **ctm_config
+                )
+                print("Successfully loaded pretrained CTM model!")
+            except Exception as e:
+                print(f"Warning: Could not load pretrained CTM: {e}")
+                print("Initializing CTM from scratch...")
+                self.ctm_model = ContinuousThoughtMachine(**ctm_config)
+        else:
+            print("Initializing CTM from scratch...")
+            self.ctm_model = ContinuousThoughtMachine(**ctm_config)
+        
+        # The synchronization output dimension
+        # For random-pairing: synch_representation_size = n_synch_out
+        self.synch_dim = ctm_config['n_synch_out']
+        
+        # Project synchronization features to spatial feature maps
+        # We'll use a flexible projection that can adapt to different input sizes
+        # Target feature dimension for spatial maps
+        self.feature_dim = 256
+        
+        # We'll create the spatial projection dynamically based on input size
+        # But we need to register it as a buffer/parameter for proper state dict handling
+        self._spatial_proj = None
+        
+    def _get_or_create_spatial_proj(self, target_size, device):
+        """Get or create spatial projection layer for given target size."""
+        # Use a simple key based on target size
+        key = f"proj_{target_size}"
+        if not hasattr(self, key):
+            proj = nn.Linear(self.synch_dim, target_size * self.feature_dim).to(device)
+            setattr(self, key, proj)
+        return getattr(self, key)
+    
+    def forward(self, x):
+        """
+        Forward pass through CTM model.
+        
+        Args:
+            x: Input tensor (B, 3, H, W), should be normalized to [0, 1]
+            
+        Returns:
+            List containing feature maps extracted from CTM's synchronization representation
+        """
+        B, C, H, W = x.shape
+        
+        # CTM expects input in [0, 1] range (it handles normalization internally)
+        # Ensure input is in [0, 1] range
+        if x.max() > 1.0:
+            x = x / 255.0
+        
+        # Forward through CTM
+        # CTM returns: (predictions, certainties, synchronisation_out)
+        # We use synchronisation_out which is the representation after iterative reasoning
+        with torch.set_grad_enabled(self.training):
+            _, _, sync_features = self.ctm_model(x)
+        
+        # sync_features shape: (B, n_synch_out) = (B, 8196)
+        # We need to reshape this to spatial format (B, C, H', W')
+        
+        # Calculate output spatial dimensions (typically H/32, W/32 for ResNet152-4)
+        # ResNet152-4 with stride 2 and maxpool gives ~32x downsampling
+        H_out = max(1, H // 32)
+        W_out = max(1, W // 32)
+        
+        target_spatial_size = H_out * W_out
+        target_dim = target_spatial_size * self.feature_dim
+        
+        # Project sync features to spatial feature maps
+        if self.synch_dim >= target_dim:
+            # If sync_dim is large enough, we can reshape directly
+            features = sync_features[:, :target_dim]
+            features = features.view(B, self.feature_dim, H_out, W_out)
+        else:
+            # Project to target size using learnable projection
+            spatial_proj = self._get_or_create_spatial_proj(target_spatial_size, x.device)
+            features = spatial_proj(sync_features)
+            features = features.view(B, self.feature_dim, H_out, W_out)
+        
+        # Return as list for consistency with other backbones
+        return [features]
 
 
 class MultiScaleFusion(nn.Module):

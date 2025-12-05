@@ -622,7 +622,7 @@ def train_meta_clip_heatmap():
             heat = pred.squeeze(0).squeeze(0).detach().cpu().numpy()
             m = heat.max() if heat.size > 0 else 1.0
 
-            peaks = thresholded_locations(heat, threshold=0.3)
+            peaks = thresholded_locations(heat, threshold=0.1)
             peaks_xy = [(int(p[1]), int(p[0])) for p in peaks]
 
             # Use streamlined matching function

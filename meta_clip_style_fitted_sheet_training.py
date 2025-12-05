@@ -66,7 +66,7 @@ DEFAULT_CONFIG = {
         "image_data/fitted_sheet1", 
         "image_data/fitted_sheet2"
     ],
-    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v10i.yolov11/runs/segment/train/weights/best.pt",
+    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v11i.yolov11/runs/segment/train/weights/best.pt",
     "allowed_classes": [1],  # fitted_sheet class
     "image_size": 256,
     
@@ -632,40 +632,42 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             num_batches += 1
             
             # Get ground truth heatmap
-            gt_heatmap = keypoints[0, 0].cpu().numpy()
-            
-            # Calculate match rate using streamlined function
-            match_result = calculate_keypoint_match_rate(
-                gt_heatmap, pred_heatmap,
-                gt_threshold=0.5, pred_threshold=0.3,
-                match_threshold=10.0, combine_distance=10.0
-            )
-            
-            matched = match_result['matched_count']
-            distances = match_result['distances']
-            gt_keypoints = match_result['gt_keypoints']
-            pred_keypoints = match_result['pred_keypoints']
-            
-            total_gt_points += match_result['total_gt']
-            matched_total += matched
-            total_distances.extend(distances)
-            
-            # Save visualization
-            file_name = os.path.basename(file_paths[0])
-            save_keypoint_visualization(
-                images[0].cpu(), pred_heatmap, gt_heatmap,
-                pred_keypoints, gt_keypoints,
-                os.path.join(results_dir, f"{file_name}_meta_clip_keypoints.png")
-            )
-            
-            detailed_results.append({
-                'file': file_name,
-                'matched': matched,
-                'total_gt': len(gt_keypoints),
-                'avg_distance': np.mean(distances) if distances else None,
-                'pred_keypoints': pred_keypoints,
-                'gt_keypoints': gt_keypoints
-            })
+            for i in range(len(images)):
+                gt_heatmap = keypoints[i, 0].cpu().numpy()
+                pred_heatmap = pred_heatmaps[i, 0].cpu().numpy()
+
+                # Calculate match rate using streamlined function
+                match_result = calculate_keypoint_match_rate(
+                    gt_heatmap, pred_heatmap,
+                    gt_threshold=0.5, pred_threshold=0.1,
+                    match_threshold=10.0, combine_distance=10.0
+                )
+                
+                matched = match_result['matched_count']
+                distances = match_result['distances']
+                gt_keypoints = match_result['gt_keypoints']
+                pred_keypoints = match_result['pred_keypoints']
+                
+                total_gt_points += match_result['total_gt']
+                matched_total += matched
+                total_distances.extend(distances)
+                
+                # Save visualization
+                file_name = os.path.basename(file_paths[i])
+                save_keypoint_visualization(
+                    images[i].cpu(), pred_heatmap, gt_heatmap,
+                    pred_keypoints, gt_keypoints,
+                    os.path.join(results_dir, f"{file_name}_meta_clip_keypoints.png")
+                )
+                
+                detailed_results.append({
+                    'file': file_name,
+                    'matched': matched,
+                    'total_gt': len(gt_keypoints),
+                    'avg_distance': np.mean(distances) if distances else None,
+                    'pred_keypoints': pred_keypoints,
+                    'gt_keypoints': gt_keypoints
+                })
     
     # Compute overall metrics
     match_rate = matched_total / max(1, total_gt_points)
