@@ -38,6 +38,9 @@ from src.models import ClipHeatmapModel, create_clip_heatmap_model
 from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
+# Import simple augmentation
+from src.augmentation.simple_lighting_color_augmentation import create_simple_lighting_color_augmentation
+
 # TensorRT utilities
 try:
     import tensorrt as trt
@@ -60,9 +63,10 @@ DEFAULT_CONFIG = {
         "via_proj/fitted_sheets"
     ],
     "image_paths": [
-        "image_data/fitted_sheet1"
+        "image_data/fitted_sheet1", 
+        "image_data/fitted_sheet2"
     ],
-    "yolo_model_path": "models/yolo_finetuned/best_2.pt",
+    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v11i.yolov11/runs/segment/train/weights/best.pt",
     "allowed_classes": [1],  # fitted_sheet class
     "image_size": 256,
     
@@ -93,9 +97,11 @@ DEFAULT_CONFIG = {
     ],
     "prior_weight": 0.5,
     
-    # Augmentation configuration
+    # Enhanced augmentation configuration
     "use_augmentation": True,
-    "use_stronger_augmentation": False,  # More conservative for post-training
+    "augmentation_intensity": "medium",  # 'light', 'medium', 'strong'
+    "use_lighting_augmentation": True,
+    "use_color_augmentation": True,
     
     # Early stopping and saving
     "early_stopping_patience": 15,
@@ -268,15 +274,12 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                 img_resized, keypoints_resized = resize_image_and_keypoints(
                     img_rgb, keypoints, image_size, image_size
                 )
-                img_resized_bgr, _ = resize_image_and_keypoints(
-                    img, keypoints, image_size, image_size
-                )
                 
                 # Apply YOLO masking on the resized image if available
                 if yolo_model is not None:
                     try:
                         # Run YOLO inference on resized image
-                        results = yolo_model(img_resized_bgr)
+                        results = yolo_model(img_resized)
                         if len(results) > 0 and results[0].masks is not None:
                             # Create mask for fitted_sheet regions
                             mask_all = np.zeros((image_size, image_size), dtype=np.uint8)
@@ -629,40 +632,42 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             num_batches += 1
             
             # Get ground truth heatmap
-            gt_heatmap = keypoints[0, 0].cpu().numpy()
-            
-            # Calculate match rate using streamlined function
-            match_result = calculate_keypoint_match_rate(
-                gt_heatmap, pred_heatmap,
-                gt_threshold=0.5, pred_threshold=0.3,
-                match_threshold=10.0, combine_distance=10.0
-            )
-            
-            matched = match_result['matched_count']
-            distances = match_result['distances']
-            gt_keypoints = match_result['gt_keypoints']
-            pred_keypoints = match_result['pred_keypoints']
-            
-            total_gt_points += match_result['total_gt']
-            matched_total += matched
-            total_distances.extend(distances)
-            
-            # Save visualization
-            file_name = os.path.basename(file_paths[0])
-            save_keypoint_visualization(
-                images[0].cpu(), pred_heatmap, gt_heatmap,
-                pred_keypoints, gt_keypoints,
-                os.path.join(results_dir, f"{file_name}_meta_clip_keypoints.png")
-            )
-            
-            detailed_results.append({
-                'file': file_name,
-                'matched': matched,
-                'total_gt': len(gt_keypoints),
-                'avg_distance': np.mean(distances) if distances else None,
-                'pred_keypoints': pred_keypoints,
-                'gt_keypoints': gt_keypoints
-            })
+            for i in range(len(images)):
+                gt_heatmap = keypoints[i, 0].cpu().numpy()
+                pred_heatmap = pred_heatmaps[i, 0].cpu().numpy()
+
+                # Calculate match rate using streamlined function
+                match_result = calculate_keypoint_match_rate(
+                    gt_heatmap, pred_heatmap,
+                    gt_threshold=0.5, pred_threshold=0.1,
+                    match_threshold=10.0, combine_distance=10.0
+                )
+                
+                matched = match_result['matched_count']
+                distances = match_result['distances']
+                gt_keypoints = match_result['gt_keypoints']
+                pred_keypoints = match_result['pred_keypoints']
+                
+                total_gt_points += match_result['total_gt']
+                matched_total += matched
+                total_distances.extend(distances)
+                
+                # Save visualization
+                file_name = os.path.basename(file_paths[i])
+                save_keypoint_visualization(
+                    images[i].cpu(), pred_heatmap, gt_heatmap,
+                    pred_keypoints, gt_keypoints,
+                    os.path.join(results_dir, f"{file_name}_meta_clip_keypoints.png")
+                )
+                
+                detailed_results.append({
+                    'file': file_name,
+                    'matched': matched,
+                    'total_gt': len(gt_keypoints),
+                    'avg_distance': np.mean(distances) if distances else None,
+                    'pred_keypoints': pred_keypoints,
+                    'gt_keypoints': gt_keypoints
+                })
     
     # Compute overall metrics
     match_rate = matched_total / max(1, total_gt_points)
@@ -931,15 +936,22 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
         generator=torch.Generator().manual_seed(42)
     )
     
-    # Create datasets with proper splitting
+    # Create datasets with enhanced augmentation
     if config.get("use_augmentation", True):
-        augmentation = BedsheetAugmentation(config["image_size"])
+        augmentation_intensity = config.get("augmentation_intensity", "medium")
+        augmentation = create_simple_lighting_color_augmentation(
+            image_size=config["image_size"],
+            intensity=augmentation_intensity,
+            augmentation_type='fitted_sheet'
+        )
         train_dataset = BedsheetKeypointDataset(
             img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes,
             config["image_size"], transform=augmentation
         )
+        print(f"Using enhanced augmentation with {augmentation_intensity} intensity")
     else:
         train_dataset = base_dataset
+        print("No augmentation applied")
     
     # Create proper subsets using torch.utils.data.Subset
     train_subset = torch.utils.data.Subset(train_dataset, train_indices.indices)

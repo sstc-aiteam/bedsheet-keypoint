@@ -43,8 +43,8 @@ class SimpleKeypointInference:
             self.model_config = {
                 'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
             }
-        elif model_type == 'fitted_sheet':  # fitted_sheet
-            self.model_path = 'models/meta_clip_style_fitted_sheet_post_original'
+        elif model_type == 'fitted_sheet_inverse':  # fitted_sheet
+            self.model_path = 'models/meta_clip_style_fitted_sheet_inverse_post_original'
             self.model_config = {
                 'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
             }
@@ -79,7 +79,7 @@ class SimpleKeypointInference:
         print(f"✅ Loaded {self.model_type} model successfully")
         
         # Load YOLO model for segmentation (same as training)
-        yolo_path = 'models/yolo_finetuned/best_2.pt'
+        yolo_path = 'models/yolo_finetuned/sheet_without_plastic.v11i.yolov11/runs/segment/train/weights/best.pt'
         if os.path.exists(yolo_path):
             self.yolo_model = YOLO(yolo_path)
             print(f"✅ Loaded YOLO model from {yolo_path}")
@@ -101,56 +101,44 @@ class SimpleKeypointInference:
         img_bgr = cv2.imread(image_path)
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         original_size = (img_rgb.shape[1], img_rgb.shape[0])  # (width, height)
-        
-        # Apply YOLO segmentation if available (same as training)
-        mask_all = None
-        if self.yolo_model is not None:
-            try:
-                results = self.yolo_model(img_bgr, task="segment")
-                if len(results) > 0 and results[0].masks is not None:
-                    # Get allowed classes based on model type
-                    if self.model_type == "bedsheet":
-                        allowed_classes = [3]
-                    elif self.model_type == "mattress":
-                        allowed_classes = [0, 1, 2, 3]
-                    elif self.model_type == "fitted_sheet":
-                        allowed_classes = [1]
-                    # Create mask for allowed regions
-                    mask_all = np.zeros(original_size[::-1], dtype=np.uint8)  # (height, width)
-                    masks = results[0].masks.data.cpu().numpy()
-                    classes = results[0].boxes.cls.cpu().numpy()
-                    
-                    for mask, cls_id in zip(masks, classes):
-                        if int(cls_id) in allowed_classes:
-                            mask_binary = (mask > 0.5).astype(np.uint8) * 255
-                            mask_resized = cv2.resize(mask_binary, original_size, interpolation=cv2.INTER_NEAREST)
-                            mask_all = cv2.bitwise_or(mask_all, mask_resized)
-                    
-                    if np.any(mask_all > 0):
-                        print(f"✅ Applied YOLO segmentation for classes {allowed_classes}")
-                    else:
-                        mask_all = None
-            except Exception as e:
-                print(f"⚠️  YOLO processing failed: {e}")
-        
+
+
         # Resize to model input size
         target_size = self.model_config['image_size']
         img_resized = cv2.resize(img_rgb, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
         
-        # Convert to float
-        image_array = img_resized.astype(np.float32)
-        
-        # Apply mask if available
-        if mask_all is not None:
-            # Resize mask to target size
-            mask_resized = cv2.resize(mask_all, (target_size, target_size), interpolation=cv2.INTER_NEAREST)
-            # Apply mask to resized image
-            image_array[mask_resized == 0] = 0
+        # Apply YOLO segmentation if available (same as training)
+        if self.yolo_model is not None:
+            # Run YOLO inference on resized image
+            results = self.yolo_model(img_resized)
+            if len(results) > 0 and results[0].masks is not None:
+                # Get allowed classes based on model type
+                if self.model_type == "bedsheet":
+                    allowed_classes = [1]
+                elif self.model_type == "mattress":
+                    allowed_classes = [0, 1, 2, 3]
+                elif self.model_type == "fitted_sheet_inverse":
+                    allowed_classes = [1]
+                # Create mask for fitted_sheet regions
+                mask_all = np.zeros((self.model.image_size, self.model.image_size), dtype=np.uint8)
+                masks = results[0].masks.data.cpu().numpy()
+                classes = results[0].boxes.cls.cpu().numpy()
+                
+                for mask, cls_id in zip(masks, classes):
+                    if int(cls_id) in allowed_classes:
+                        # Resize mask to target size (should already be correct size)
+                        mask = cv2.resize(mask, (self.model.image_size, self.model.image_size), interpolation=cv2.INTER_NEAREST)
+                        mask_all = cv2.bitwise_or(mask_all, (mask > 0.5).astype(np.uint8) * 255)
+                
+                # Apply mask to image (set non-fitted_sheet regions to black)
+                img_resized[mask_all == 0] = 0
+        test_image = img_resized.copy()
+        test_image[mask_all == 0] = 0
         
         # No normalization applied (use raw pixel values)
         
         # Convert to tensor and add batch dimension (normalize to 0-1 range)
-        image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).float() / 255.0
+        image_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float() / 255.0
         image_tensor = image_tensor.unsqueeze(0)
         
         return image_tensor.to(self.device), original_size
@@ -160,47 +148,6 @@ class SimpleKeypointInference:
         with torch.no_grad():
             heatmap = self.model(image_tensor)
         return heatmap
-    
-    def postprocess_heatmap(self, heatmap: torch.Tensor, original_size: Tuple[int, int]) -> Tuple[np.ndarray, List[Tuple[int, int]]]:
-        """
-        Postprocess heatmap exactly like training evaluation.
-        
-        Args:
-            heatmap: Predicted heatmap tensor
-            original_size: Original image size (width, height)
-            
-        Returns:
-            Resized heatmap and keypoint coordinates
-        """
-        # Convert to numpy (same as training: pred_heatmap = pred_heatmaps[0, 0].cpu().numpy())
-        heatmap_np = heatmap.squeeze().cpu().numpy()
-        
-        # # normalize the heatmap
-        # m = heatmap_np.max() if heatmap_np.size > 0 else 1.0
-        # if m > 0.0005:
-        #     heatmap_np = heatmap_np / m
-        # else:
-        #     heatmap_np = np.zeros_like(heatmap_np)
-        
-        # Extract keypoints using EXACT same method as training evaluation
-        peaks = thresholded_locations(heatmap_np, threshold=0.3)
-        
-        # Combine nearby peaks (same as training)
-        combined_peaks = combine_nearby_peaks(peaks, distance_threshold=10)
-        
-        # Convert to keypoint format (same coordinate order as training: (x, y))
-        # Use combined_peaks to reduce nearby duplicates
-        keypoints = [(p[1], p[0]) for p in combined_peaks]
-        
-        # Scale keypoints to original size
-        scale_x = original_size[0] / heatmap_np.shape[1]
-        scale_y = original_size[1] / heatmap_np.shape[0]
-        keypoints_scaled = [(int(x * scale_x), int(y * scale_y)) for x, y in keypoints]
-        
-        # Resize heatmap to original size for visualization
-        heatmap_resized = cv2.resize(heatmap_np, original_size, interpolation=cv2.INTER_CUBIC)
-        
-        return heatmap_resized, keypoints_scaled
     
     def visualize_results(self, image_path: str, heatmap: np.ndarray, keypoints: List[Tuple[int, int]], 
                          output_path: Optional[str] = None) -> None:
@@ -252,16 +199,37 @@ class SimpleKeypointInference:
         
         # Preprocess
         image_tensor, original_size = self.preprocess_image(image_path)
+        print(image_tensor)
         print(f"📐 Input shape: {image_tensor.shape}, Original size: {original_size}")
         
         # Predict
         heatmap = self.predict_keypoints(image_tensor)
         print(f"🔥 Heatmap shape: {heatmap.shape}")
         
-        # Postprocess
-        heatmap_resized, keypoints = self.postprocess_heatmap(heatmap, original_size)
-        print(f"🎯 Found {len(keypoints)} keypoints")
+        # # Postprocess
+        # heatmap_resized, keypoints = self.postprocess_heatmap(heatmap, original_size)
+        # print(f"🎯 Found {len(keypoints)} keypoints")
+        images = image_tensor
+            
+        # Get predictions
+        with torch.no_grad():
+            pred_heatmaps = self.model(images)
+            pred_heatmap = pred_heatmaps[0, 0].cpu().numpy()
         
+        # Extract keypoints from predicted heatmap
+        pred_peaks = thresholded_locations(pred_heatmap, threshold=0.1)
+        # Combine nearby peaks to reduce duplicates
+        combined_peaks = combine_nearby_peaks(pred_peaks, distance_threshold=10)
+        scale_x = original_size[0] / pred_heatmap.shape[1]
+        scale_y = original_size[1] / pred_heatmap.shape[0]
+
+        # Scale keypoints to original size
+        pred_keypoints = [(int(p[1] * scale_x), int(p[0] * scale_y)) for p in combined_peaks]  # Convert to (x, y)
+
+        print(f"🎯 Found {len(pred_keypoints)} keypoints")
+        heatmap_resized = cv2.resize(pred_heatmap, original_size, interpolation=cv2.INTER_CUBIC)
+        keypoints = pred_keypoints
+               
         # Visualize
         if output_path is None:
             output_path = f"inference_results/{self.model_type}_keypoints_{os.path.basename(image_path)}.png"
@@ -275,23 +243,46 @@ class SimpleKeypointInference:
 def main():
     """Main function for command line usage."""
     parser = argparse.ArgumentParser(description='Simple Meta CLIP Keypoint Detection Inference')
-    parser.add_argument('--model', choices=['bedsheet', 'mattress', 'fitted_sheet'], default='bedsheet',
-                       help='Model type to use')
-    parser.add_argument('--image', required=True, help='Path to input image')
-    parser.add_argument('--output', help='Output path for visualization')
+    parser.add_argument('--model', choices=['bedsheet', 'mattress', 'fitted_sheet_inverse'], default='bedsheet',
+                        help='Model type to use')
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--image', help='Path to a single input image')
+    group.add_argument('--folder', help='Path to a folder of images (jpg/png/jpeg)')
+    parser.add_argument('--output', help='Output path for visualization (single image). '
+                                         'For folders, results are saved beside inputs in inference_results/.')
     
     args = parser.parse_args()
     
     # Create inference demo
     demo = SimpleKeypointInference(model_type=args.model)
     
-    # Run inference
-    keypoints = demo.run_inference(args.image, args.output)
+    # Gather image paths
+    if args.image:
+        image_paths = [args.image]
+    else:
+        supported_ext = ('.jpg', '.jpeg', '.png')
+        image_paths = [
+            os.path.join(args.folder, f)
+            for f in os.listdir(args.folder)
+            if f.lower().endswith(supported_ext)
+        ]
+        if not image_paths:
+            raise FileNotFoundError(f"No images with extensions {supported_ext} found in {args.folder}")
     
-    print(f"\n✅ Inference completed!")
-    print(f"📊 Found {len(keypoints)} keypoints")
-    if keypoints:
-        print(f"📍 Keypoint coordinates: {keypoints}")
+    # Run inference for each image
+    for img_path in image_paths:
+        # For batch mode, place outputs in inference_results/<model_type>/filename.png
+        if args.folder and args.output is None:
+            out_dir = os.path.join('inference_results', demo.model_type)
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, f"{os.path.basename(img_path)}.png")
+        else:
+            out_path = args.output
+        
+        keypoints = demo.run_inference(img_path, out_path)
+        print(f"\n✅ {img_path}: {len(keypoints)} keypoints")
+        if keypoints:
+            print(f"📍 {keypoints}")
 
 
 if __name__ == "__main__":

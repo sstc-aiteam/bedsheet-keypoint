@@ -272,6 +272,7 @@ models/*/tb/
 models/*.pth
 models/*.trt
 models/*.json
+models/*
 *.log
 __pycache__/
 *.pyc

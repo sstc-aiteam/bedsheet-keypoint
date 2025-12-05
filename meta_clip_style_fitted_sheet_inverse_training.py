@@ -2,9 +2,9 @@
 """
 Post-Processing Meta CLIP-Style Keypoint Detection Model Training
 
-This script implements post-training for the Meta CLIP heatmap model using bedsheet data.
+This script implements post-training for the Meta CLIP heatmap model using fitted_sheet data.
 It loads the pre-trained Meta CLIP model from cloth data and applies additional LoRA fine-tuning
-on real bedsheet images with keypoint annotations.
+on real fitted_sheet images with keypoint annotations.
 """
 
 import os
@@ -38,9 +38,6 @@ from src.models import ClipHeatmapModel, create_clip_heatmap_model
 from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
-# Import simple augmentation
-from src.augmentation.simple_lighting_color_augmentation import create_simple_lighting_color_augmentation
-
 # TensorRT utilities
 try:
     import tensorrt as trt
@@ -55,18 +52,19 @@ DEFAULT_CONFIG = {
     "model_name": "facebook/metaclip-b16-fullcc2.5b",  # Meta CLIP model
     "use_original_metaclip": False,  # Set to True to use original Meta CLIP instead of pre-trained
     "ensure_equal_params": True,  # Ensure both models have identical trainable parameters
-    "output_dir": "models/meta_clip_style_bedsheet_post",
-    "results_dir": "results_meta_clip_bedsheet_post",
+    "output_dir": "models/meta_clip_style_fitted_sheet_inverse_post",
+    "results_dir": "results_meta_clip_fitted_sheet_inverse_post",
     
     # Data configuration
     "keypoints_data_srcs": [
-        "via_proj/bedsheets"
+        "via_proj/fitted_sheets_inverse"
     ],
     "image_paths": [
-        "image_data/RGB-images", "image_data/RGB-images2"
+        "image_data/床包背面2",
+        "image_data/20251119_RealSenseOnRobotHead_床包背面鈕扣"
     ],
-    "yolo_model_path": "models/yolo_finetuned/best_2.pt",
-    "allowed_classes": [3],  # bedsheet class
+    "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v11i.yolov11/runs/segment/train/weights/best.pt",
+    "allowed_classes": [1],  # fitted_sheet class
     "image_size": 256,
     
     # Training configuration
@@ -83,9 +81,7 @@ DEFAULT_CONFIG = {
     # Text prior configuration
     "use_text_prior": True,
     "prior_prompts": [
-        "a photo of a bedsheet corner",
-        "bedsheet corner point",
-        "sharp bedsheet corner"
+        "an orange dot on the fitted sheet"
     ],
     "negative_prompts": [
         "smooth bedsheet surface",
@@ -96,11 +92,9 @@ DEFAULT_CONFIG = {
     ],
     "prior_weight": 0.5,
     
-    # Enhanced augmentation configuration
+    # Augmentation configuration
     "use_augmentation": True,
-    "augmentation_intensity": "medium",  # 'light', 'medium', 'strong'
-    "use_lighting_augmentation": True,
-    "use_color_augmentation": True,
+    "use_stronger_augmentation": False,  # More conservative for post-training
     
     # Early stopping and saving
     "early_stopping_patience": 15,
@@ -129,10 +123,10 @@ def set_random_seeds(seed: int = 42):
         torch.cuda.manual_seed_all(seed)
 
 def compute_sigma(H):
-    return max(1.0, 0.03 * H)
+    return max(1.0, 0.01 * H)
 
 class BedsheetKeypointDataset(Dataset):
-    """Dataset for bedsheet keypoint detection with Meta CLIP normalization."""
+    """Dataset for fitted_sheet keypoint detection with Meta CLIP normalization."""
     
     def __init__(self, img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes, 
                  image_size=256, transform=None):
@@ -175,7 +169,7 @@ class BedsheetKeypointDataset(Dataset):
         }
 
 class BedsheetAugmentation:
-    """Augmentation for bedsheet keypoint detection."""
+    """Augmentation for fitted_sheet keypoint detection."""
     
     def __init__(self, image_size=256):
         self.image_size = image_size
@@ -213,14 +207,14 @@ class BedsheetAugmentation:
         return img_tensor, keypoints_tensor
 
 def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model, allowed_classes, image_size):
-    """Generate bedsheet dataset data with YOLO masking."""
+    """Generate fitted_sheet dataset data with YOLO masking."""
     img_arr = []
     rgb_img_arr = []
     keypoints_img_arr = []
     file_paths = []
     original_sizes = []
     
-    print("Loading bedsheet data...")
+    print("Loading fitted_sheet data...")
     
     for keypoints_src in keypoints_data_srcs:
         if not os.path.exists(keypoints_src):
@@ -314,7 +308,7 @@ def generate_bedsheet_dataset_data(keypoints_data_srcs, image_paths, yolo_model,
                 file_paths.append(img_path)
                 original_sizes.append(original_size)
     
-    print(f"Loaded {len(img_arr)} bedsheet samples")
+    print(f"Loaded {len(img_arr)} fitted_sheet samples")
     return img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes
 
 def load_pretrained_meta_clip_model(config):
@@ -467,7 +461,7 @@ def load_pretrained_meta_clip_model(config):
         return model
 
 def train_meta_clip_post_model(model, train_loader, val_loader, config):
-    """Train Meta CLIP model on bedsheet data."""
+    """Train Meta CLIP model on fitted_sheet data."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     
@@ -634,40 +628,42 @@ def evaluate_meta_clip_model(model, test_loader, results_dir, config):
             num_batches += 1
             
             # Get ground truth heatmap
-            gt_heatmap = keypoints[0, 0].cpu().numpy()
-            
-            # Calculate match rate using streamlined function
-            match_result = calculate_keypoint_match_rate(
-                gt_heatmap, pred_heatmap,
-                gt_threshold=0.5, pred_threshold=0.3,
-                match_threshold=10.0, combine_distance=10.0
-            )
-            
-            matched = match_result['matched_count']
-            distances = match_result['distances']
-            gt_keypoints = match_result['gt_keypoints']
-            pred_keypoints = match_result['pred_keypoints']
-            
-            total_gt_points += match_result['total_gt']
-            matched_total += matched
-            total_distances.extend(distances)
-            
-            # Save visualization
-            file_name = os.path.basename(file_paths[0])
-            save_keypoint_visualization(
-                images[0].cpu(), pred_heatmap, gt_heatmap,
-                pred_keypoints, gt_keypoints,
-                os.path.join(results_dir, f"{file_name}_meta_clip_keypoints.png")
-            )
-            
-            detailed_results.append({
-                'file': file_name,
-                'matched': matched,
-                'total_gt': len(gt_keypoints),
-                'avg_distance': np.mean(distances) if distances else None,
-                'pred_keypoints': pred_keypoints,
-                'gt_keypoints': gt_keypoints
-            })
+            for i in range(len(images)):
+                gt_heatmap = keypoints[i, 0].cpu().numpy()
+                pred_heatmap = pred_heatmaps[i, 0].cpu().numpy()
+
+                # Calculate match rate using streamlined function
+                match_result = calculate_keypoint_match_rate(
+                    gt_heatmap, pred_heatmap,
+                    gt_threshold=0.5, pred_threshold=0.1,
+                    match_threshold=10.0, combine_distance=10.0
+                )
+                
+                matched = match_result['matched_count']
+                distances = match_result['distances']
+                gt_keypoints = match_result['gt_keypoints']
+                pred_keypoints = match_result['pred_keypoints']
+                
+                total_gt_points += match_result['total_gt']
+                matched_total += matched
+                total_distances.extend(distances)
+                
+                # Save visualization
+                file_name = os.path.basename(file_paths[i])
+                save_keypoint_visualization(
+                    images[i].cpu(), pred_heatmap, gt_heatmap,
+                    pred_keypoints, gt_keypoints,
+                    os.path.join(results_dir, f"{file_name}_meta_clip_keypoints.png")
+                )
+                
+                detailed_results.append({
+                    'file': file_name,
+                    'matched': matched,
+                    'total_gt': len(gt_keypoints),
+                    'avg_distance': np.mean(distances) if distances else None,
+                    'pred_keypoints': pred_keypoints,
+                    'gt_keypoints': gt_keypoints
+                })
     
     # Compute overall metrics
     match_rate = matched_total / max(1, total_gt_points)
@@ -729,12 +725,12 @@ def save_keypoint_visualization(image, pred_heatmap, gt_heatmap, pred_keypoints,
 def setup_model_directories(config: Dict[str, Any]) -> Dict[str, Any]:
     """Setup output directories based on model type (original vs pre-trained)."""
     if config.get('use_original_metaclip', False):
-        config['output_dir'] = "models/meta_clip_style_bedsheet_post_original"
-        config['results_dir'] = "results_meta_clip_bedsheet_post_original"
+        config['output_dir'] = "models/meta_clip_style_fitted_sheet_inverse_post_original"
+        config['results_dir'] = "results_meta_clip_fitted_sheet_inverse_post_original"
         print("Using original Meta CLIP model - output directories:")
     else:
-        config['output_dir'] = "models/meta_clip_style_bedsheet_post_pretrained"
-        config['results_dir'] = "results_meta_clip_bedsheet_post_pretrained"
+        config['output_dir'] = "models/meta_clip_style_fitted_sheet_inverse_post_pretrained"
+        config['results_dir'] = "results_meta_clip_fitted_sheet_inverse_post_pretrained"
         print("Using pre-trained Meta CLIP model - output directories:")
     
     print(f"  Output: {config['output_dir']}")
@@ -875,7 +871,7 @@ def compare_models_equal_params(config: Dict[str, Any]) -> bool:
 
 def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipHeatmapModel, Dict]:
     """
-    Main post-training pipeline for Meta CLIP model on bedsheet data.
+    Main post-training pipeline for Meta CLIP model on fitted_sheet data.
     
     Args:
         config: Configuration dictionary containing all training parameters
@@ -898,13 +894,14 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
     # Load YOLO model (if available)
     try:
         yolo_model_finetuned = YOLO(config["yolo_model_path"])
+        yolo_model_finetuned.to(device)
         print("YOLO model loaded for masking")
     except Exception as e:
         print(f"Warning: Could not load YOLO model: {e}")
         yolo_model_finetuned = None
     
-    # Generate bedsheet dataset
-    print("Generating bedsheet dataset...")
+    # Generate fitted_sheet dataset
+    print("Generating fitted_sheet dataset...")
     img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes = generate_bedsheet_dataset_data(
         config["keypoints_data_srcs"],
         config["image_paths"],
@@ -916,7 +913,7 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
     print(f"Bedsheet dataset generated: {len(img_arr)} samples")
     
     if len(img_arr) == 0:
-        raise ValueError("No bedsheet data found. Check your data paths and keypoint annotations.")
+        raise ValueError("No fitted_sheet data found. Check your data paths and keypoint annotations.")
     
     # Create base dataset without augmentation
     base_dataset = BedsheetKeypointDataset(
@@ -935,22 +932,15 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
         generator=torch.Generator().manual_seed(42)
     )
     
-    # Create datasets with simple augmentation
+    # Create datasets with proper splitting
     if config.get("use_augmentation", True):
-        augmentation_intensity = config.get("augmentation_intensity", "medium")
-        augmentation = create_simple_lighting_color_augmentation(
-            image_size=config["image_size"],
-            intensity=augmentation_intensity,
-            augmentation_type='bedsheet'
-        )
+        augmentation = BedsheetAugmentation(config["image_size"])
         train_dataset = BedsheetKeypointDataset(
             img_arr, rgb_img_arr, keypoints_img_arr, file_paths, original_sizes,
             config["image_size"], transform=augmentation
         )
-        print(f"Using simple augmentation with {augmentation_intensity} intensity")
     else:
         train_dataset = base_dataset
-        print("No augmentation applied")
     
     # Create proper subsets using torch.utils.data.Subset
     train_subset = torch.utils.data.Subset(train_dataset, train_indices.indices)
@@ -1014,7 +1004,7 @@ if __name__ == "__main__":
                        help="Use original Meta CLIP instead of pre-trained")
     parser.add_argument("--compare", action="store_true",
                        help="Compare both models to verify equal parameters")
-    parser.add_argument("--epochs", type=int, default=20, help="Number of epochs")
+    parser.add_argument("--epochs", type=int, default=40, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--disable_equal_params", action="store_true",
                        help="Disable equal parameters enforcement")
