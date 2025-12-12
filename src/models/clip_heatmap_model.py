@@ -20,9 +20,9 @@ except ImportError:
     sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
     from src.utils.model_utils import *
 
-# Import CLIP and PEFT dependencies
+# Import (Meta)CLIP and PEFT dependencies
 try:
-    from transformers import CLIPModel, AutoTokenizer
+    from transformers import AutoModel, AutoTokenizer
     HF_AVAILABLE = True
 except ImportError:
     HF_AVAILABLE = False
@@ -116,9 +116,15 @@ class ClipHeatmapModel(nn.Module):
         # Store model name for saving
         self.model_name = model_name
         
-        # Load full CLIP model; we will use its vision submodule directly.
-        clip = CLIPModel.from_pretrained(model_name)
+        # Load full CLIP-like model; MetaCLIP2 checkpoints use `model_type=metaclip_2` and may not
+        # deserialize cleanly via `CLIPModel.from_pretrained`, but they *do* load via `AutoModel`.
+        clip = AutoModel.from_pretrained(model_name)
         self.clip = clip
+        if not hasattr(clip, "vision_model"):
+            raise ValueError(
+                f"Loaded model '{model_name}' does not expose `.vision_model`. "
+                "This training pipeline expects a CLIP-like dual-encoder model."
+            )
         self.vision = clip.vision_model
         self.hidden_size = self.vision.config.hidden_size
         self.patch_size = self.vision.config.patch_size
@@ -166,6 +172,15 @@ class ClipHeatmapModel(nn.Module):
             for p in self.vision.parameters():
                 p.requires_grad = False
 
+        # Guard: ViT patch embedding requires input H/W divisible by patch_size.
+        # Many CLIP-like models are patch16 (256 works), but L/14 models (e.g., MetaCLIP2 L14) require 224/238/252/280... etc.
+        if self.image_size % int(self.patch_size) != 0:
+            raise ValueError(
+                f"image_size={self.image_size} must be divisible by patch_size={self.patch_size} "
+                f"for model_name='{self.model_name}'. "
+                "Tip: for patch14 models use image_size=224; for patch16 models use 256."
+            )
+
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """
         Forward pass through the CLIP heatmap model.
@@ -177,6 +192,11 @@ class ClipHeatmapModel(nn.Module):
             Keypoint heatmap (B, 1, image_size, image_size)
         """
         # pixel_values: (B,3,H,W)
+        if (pixel_values.shape[-2] % int(self.patch_size) != 0) or (pixel_values.shape[-1] % int(self.patch_size) != 0):
+            raise ValueError(
+                f"Input tensor HxW={tuple(pixel_values.shape[-2:])} must be divisible by patch_size={self.patch_size} "
+                f"for model_name='{self.model_name}'."
+            )
         # Enable positional embedding interpolation for non-224 inputs
         outputs = self.vision(pixel_values=pixel_values, interpolate_pos_encoding=True)
         tokens = outputs.last_hidden_state  # (B, 1+P, D)

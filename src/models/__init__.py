@@ -11,5 +11,5 @@ __all__ = [
     'SingleHeatmapDecoder',
     'ClipHeatmapModel',
     'ClipHeatmapHead',
-    'create_clip_heatmap_model'
+    'create_clip_heatmap_model',
 ]

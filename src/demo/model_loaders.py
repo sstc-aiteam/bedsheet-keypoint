@@ -51,22 +51,55 @@ def load_model_safely(model, load_path: str, map_location="cpu", strict: bool = 
 
 
 def load_clip_heatmap_model(model_path: str):
-    """Load CLIP heatmap model using the exact same approach as inference_demo_simple.py."""
+    """Load CLIP heatmap model.
+
+    Prefers loading `training_config.json` (or `config.json`) from the model directory so we don't hardcode
+    model_name/image_size/lora settings in multiple places.
+    """
     from src.models.clip_heatmap_model import ClipHeatmapModel
     
     # Try to load from complete model first
     complete_model_path = os.path.join(os.path.dirname(model_path), 'complete_model.pth')
     if os.path.exists(complete_model_path):
         model_path = complete_model_path
+
+    model_dir = os.path.dirname(model_path)
+    cfg = None
+    for cfg_name in ("training_config.json", "config.json"):
+        cfg_path = os.path.join(model_dir, cfg_name)
+        if os.path.exists(cfg_path):
+            try:
+                import json
+                with open(cfg_path, "r") as f:
+                    cfg = json.load(f)
+                break
+            except Exception:
+                cfg = None
     
-    # Create model with exact same config as inference_demo_simple.py
+    # Create model with config from disk (fallback defaults)
+    # Note: MetaCLIP2 L/14 is patch14, so 224 is the safe default image_size.
+    model_name = (cfg or {}).get("model_name", "facebook/metaclip-2-worldwide-l14")
+    image_size = int((cfg or {}).get("image_size", 224))
+    use_lora = bool((cfg or {}).get("use_lora", True))
+    lora_r = int((cfg or {}).get("lora_r", 16))
+    lora_alpha = int((cfg or {}).get("lora_alpha", 32))
+    lora_dropout = float((cfg or {}).get("lora_dropout", 0.05))
+    use_text_prior = bool((cfg or {}).get("use_text_prior", True))
+    prior_prompts = (cfg or {}).get("prior_prompts", None)
+    negative_prompts = (cfg or {}).get("negative_prompts", None)
+    prior_weight = float((cfg or {}).get("prior_weight", 0.5))
+
     model = ClipHeatmapModel(
-        model_name='facebook/metaclip-b16-fullcc2.5b',
-        image_size=256,
-        use_lora=True,
-        lora_r=16,
-        lora_alpha=32,
-        use_text_prior=True
+        model_name=model_name,
+        image_size=image_size,
+        use_lora=use_lora,
+        lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        use_text_prior=use_text_prior,
+        prior_prompts=prior_prompts,
+        negative_prompts=negative_prompts,
+        prior_weight=prior_weight,
     )
     
     # Load state dict

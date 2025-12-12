@@ -19,6 +19,11 @@ from .model_utils import (
 )
 # Quantization utilities removed - functionality deprecated
 
+from .torch_memory import (
+    cleanup_torch_memory,
+    free_torch_memory,
+)
+
 __all__ = [
     # Model utilities
     'YoloBackbone',
@@ -35,5 +40,9 @@ __all__ = [
     'thresholded_locations',
     
     # Losses
-    'kl_heatmap_loss'
+    'kl_heatmap_loss',
+
+    # Memory utils
+    'cleanup_torch_memory',
+    'free_torch_memory',
 ]

@@ -36,6 +36,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 # Import CLIP model and utilities
 from src.models import ClipHeatmapModel, create_clip_heatmap_model
 from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
+from src.utils.torch_memory import free_torch_memory
 from shared.functions import get_keypoints_for_image, resize_image_and_keypoints
 
 # Import simple augmentation
@@ -52,7 +53,7 @@ except ImportError:
 # Default configuration for post-training
 DEFAULT_CONFIG = {
     # Model configuration
-    "model_name": "facebook/metaclip-b16-fullcc2.5b",  # Meta CLIP model
+    "model_name": "facebook/metaclip-2-worldwide-l14",  # MetaCLIP2 L/14 (patch14 => use image_size=560)
     "use_original_metaclip": False,  # Set to True to use original Meta CLIP instead of pre-trained
     "ensure_equal_params": True,  # Ensure both models have identical trainable parameters
     "output_dir": "models/meta_clip_style_fitted_sheet_post",
@@ -68,10 +69,10 @@ DEFAULT_CONFIG = {
     ],
     "yolo_model_path": "models/yolo_finetuned/sheet_without_plastic.v11i.yolov11/runs/segment/train/weights/best.pt",
     "allowed_classes": [1],  # fitted_sheet class
-    "image_size": 256,
+    "image_size": 560,
     
     # Training configuration
-    "batch_size": 4,
+    "batch_size": 2,
     "num_epochs": 20,
     "learning_rate": 3e-4,  # Match original training LR for fair comparison
     "weight_decay": 1e-4,
@@ -757,6 +758,24 @@ def compare_models_equal_params(config: Dict[str, Any]) -> bool:
     
     model_original = load_pretrained_meta_clip_model(config_original)
     params_original = sum(p.numel() for p in model_original.parameters() if p.requires_grad)
+    original_trainable_names = {
+        name for name, param in model_original.named_parameters() if param.requires_grad
+    }
+    original_out_shape: Optional[torch.Size] = None
+    try:
+        dummy_size = int(config.get("image_size", 560))
+        dummy_input = torch.randn(1, 3, dummy_size, dummy_size)
+        model_original.eval()
+        with torch.no_grad():
+            output_original = model_original(dummy_input)
+        original_out_shape = output_original.shape
+        print(f"✓ Original model forward ok: {original_out_shape}")
+    except Exception as e:
+        print(f"✗ Original model forward pass failed: {e}")
+        success = False
+
+    model_original = None
+    free_torch_memory(move_modules_to_cpu=True)
     
     # Test pre-trained model
     print("\n2. Creating Pre-trained Meta CLIP Model:")
@@ -767,6 +786,24 @@ def compare_models_equal_params(config: Dict[str, Any]) -> bool:
     
     model_pretrained = load_pretrained_meta_clip_model(config_pretrained)
     params_pretrained = sum(p.numel() for p in model_pretrained.parameters() if p.requires_grad)
+    pretrained_trainable_names = {
+        name for name, param in model_pretrained.named_parameters() if param.requires_grad
+    }
+    pretrained_out_shape: Optional[torch.Size] = None
+    try:
+        dummy_size = int(config.get("image_size", 560))
+        dummy_input = torch.randn(1, 3, dummy_size, dummy_size)
+        model_pretrained.eval()
+        with torch.no_grad():
+            output_pretrained = model_pretrained(dummy_input)
+        pretrained_out_shape = output_pretrained.shape
+        print(f"✓ Pre-trained model forward ok: {pretrained_out_shape}")
+    except Exception as e:
+        print(f"✗ Pre-trained model forward pass failed: {e}")
+        success = False
+
+    model_pretrained = None
+    free_torch_memory(move_modules_to_cpu=True)
     
     # Final comparison
     print("\n3. Final Parameter Comparison:")
@@ -786,17 +823,6 @@ def compare_models_equal_params(config: Dict[str, Any]) -> bool:
     # Verify exact parameter matching
     print("\n4. Verifying Exact Parameter Matching:")
     print("-" * 50)
-    
-    # Get trainable parameter names from both models
-    original_trainable_names = set()
-    for name, param in model_original.named_parameters():
-        if param.requires_grad:
-            original_trainable_names.add(name)
-    
-    pretrained_trainable_names = set()
-    for name, param in model_pretrained.named_parameters():
-        if param.requires_grad:
-            pretrained_trainable_names.add(name)
     
     print(f"Original model trainable parameter groups: {len(original_trainable_names)}")
     print(f"Pre-trained model trainable parameter groups: {len(pretrained_trainable_names)}")
@@ -830,31 +856,16 @@ def compare_models_equal_params(config: Dict[str, Any]) -> bool:
         print("  The key is that both models have identical trainable parameter counts.")
         exact_match = False
     
-    # Test forward pass
+    # Test forward pass shapes (captured above)
     print("\n5. Testing Forward Pass:")
     print("-" * 50)
-    
-    try:
-        dummy_input = torch.randn(1, 3, 256, 256)
-        
-        model_original.eval()
-        with torch.no_grad():
-            output_original = model_original(dummy_input)
-        print(f"✓ Original model: {output_original.shape}")
-        
-        model_pretrained.eval()
-        with torch.no_grad():
-            output_pretrained = model_pretrained(dummy_input)
-        print(f"✓ Pre-trained model: {output_pretrained.shape}")
-        
-        if output_original.shape == output_pretrained.shape:
+    if original_out_shape is not None and pretrained_out_shape is not None:
+        if original_out_shape == pretrained_out_shape:
             print("✅ Both models produce identical output shapes")
         else:
-            print(f"⚠️  Output shape mismatch")
-            
-    except Exception as e:
-        print(f"✗ Forward pass failed: {e}")
-        success = False
+            print(f"⚠️  Output shape mismatch: {original_out_shape} vs {pretrained_out_shape}")
+    else:
+        print("⚠️  Could not compare output shapes (at least one forward pass failed)")
     
     print("\n" + "=" * 80)
     if success and exact_match:
@@ -977,14 +988,18 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
     # Train model
     trained_model, history = train_meta_clip_post_model(model, train_loader, val_loader, config)
     
-    # Load the trained model from saved checkpoint for evaluation
-    print("\n=== Loading Trained Model from Checkpoint ===")
-    reloaded_model = load_pretrained_meta_clip_model(config)
-    
     # Load the trained weights
     checkpoint_path = os.path.join(config["output_dir"], "complete_model.pth")
     if os.path.exists(checkpoint_path):
         print(f"Loading trained weights from: {checkpoint_path}")
+        # Free the in-memory trained model before reloading to avoid OOM (two models on GPU).
+        model = None
+        trained_model = None
+        free_torch_memory(move_modules_to_cpu=True)
+
+        # Load the trained model from saved checkpoint for evaluation
+        print("\n=== Loading Trained Model from Checkpoint ===")
+        reloaded_model = load_pretrained_meta_clip_model(config)
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         # The checkpoint is saved directly as model state dict, not wrapped
         reloaded_model.load_state_dict(checkpoint)
@@ -1005,7 +1020,8 @@ def main_meta_clip_post_training_pipeline(config: Dict[str, Any]) -> Tuple[ClipH
     print(f"Model saved to: {config['output_dir']}")
     print(f"Results saved to: {config['results_dir']}")
     
-    return trained_model, history
+    # Return the model actually used for evaluation (reloaded if available).
+    return reloaded_model, history
 
 if __name__ == "__main__":
     import argparse
