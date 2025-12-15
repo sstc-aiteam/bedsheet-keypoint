@@ -4,6 +4,7 @@ Lightweight pipelines for detecting corner keypoints on bedsheets, mattresses, a
 
 ## Highlights
 - Meta CLIP B16 heatmap model with LoRA adapters (fast to fine‑tune, ~3M trainable params).
+- Upgraded to **MetaCLIP2 L/14** by default (`facebook/metaclip-2-worldwide-l14`) for CLIP-style heatmap models.
 - Scene presets: bedsheet, mattress, fitted_sheet_inverse (back side).
 - YOLO‑based segmentation masks integrated in both training and inference.
 - Simple inference script: single image or folder, optional GT overlay from `via_proj`.
@@ -28,6 +29,21 @@ cd bedsheet-keypoint
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## MetaCLIP2（L/14）使用說明
+本專案的 CLIP heatmap 模型目前預設使用 MetaCLIP2：
+- **模型**：`facebook/metaclip-2-worldwide-l14`
+- **載入方式**：在 `src/models/clip_heatmap_model.py` 使用 `AutoModel.from_pretrained(...)`（MetaCLIP2 checkpoint 不一定能用 `CLIPModel.from_pretrained` 正常反序列化）
+
+### 重要：輸入尺寸必須可被 patch size 整除
+MetaCLIP2 L/14 的 vision patch size = **14**，因此 `image_size`（以及實際輸入 tensor 的 H/W）必須滿足：
+\(H \bmod 14 = 0\) 且 \(W \bmod 14 = 0\)
+
+常見建議：
+- **可用**：224、238、252、280、294、308、560…（都可被 14 整除）
+- **不可用**：300×300（300 無法被 14 整除）
+
+程式也會在 forward 內做檢查並拋出 `ValueError`，避免「跑到一半才 shape mismatch」。
 
 ## Inference (simple demo)
 - Single image:
@@ -112,7 +128,8 @@ python tensorrt_demo.py --pytorch_model models/meta_clip_style_bedsheet_post_pre
 - `cloth_data_gen/` Warp + Blender synthetic generator.
 
 ## Notes
-- Input images are resized to 256×256; YOLO masks are applied in that space to match training.
+- Input images are resized to `image_size × image_size`（由各 training script 的 `DEFAULT_CONFIG` 決定；MetaCLIP2 L/14 常見為 560 或 224）。
+- YOLO masks 會被對齊/縮放到相同尺寸後再套用，避免 mask 與原圖解析度不一致造成 indexing 錯誤。
 - Thresholding for peaks: `thresholded_locations` with 0.3, peaks merged within 10 px.
 - Inference demo draws predictions (cyan X) and optional GT (green circles).
 
