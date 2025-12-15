@@ -138,7 +138,7 @@ class ClipHeatmapModelLoader(ModelLoader):
         
         # Create model
         model = create_clip_heatmap_model(
-            model_name=config.extra_kwargs.get('model_name', 'facebook/metaclip-b16-fullcc2.5b'),
+            model_name=config.extra_kwargs.get('model_name', 'facebook/metaclip-2-worldwide-l14'),
             image_size=config.input_shape[-1],
             use_lora=config.extra_kwargs.get('use_lora', True),
             lora_r=config.extra_kwargs.get('lora_r', 16),
@@ -160,7 +160,7 @@ class ClipHeatmapModelLoader(ModelLoader):
     def get_model_info(self, config: ModelConfig) -> Dict[str, Any]:
         return {
             'model_type': 'ClipHeatmapModel',
-            'model_name': config.extra_kwargs.get('model_name', 'facebook/metaclip-b16-fullcc2.5b'),
+            'model_name': config.extra_kwargs.get('model_name', 'facebook/metaclip-2-worldwide-l14'),
             'use_lora': config.extra_kwargs.get('use_lora', True),
             'input_shape': config.input_shape
         }

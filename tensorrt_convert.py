@@ -255,7 +255,7 @@ Examples:
     # Model-specific parameters
     parser.add_argument("--use_enhanced_yolo", action="store_true", default=True,
                        help="Use Enhanced YOLO backbone (default: True)")
-    parser.add_argument("--model_name", type=str, default="facebook/metaclip-b16-fullcc2.5b",
+    parser.add_argument("--model_name", type=str, default="facebook/metaclip-2-worldwide-l14",
                        help="CLIP model name (for clip_heatmap_model)")
     parser.add_argument("--use_lora", action="store_true", default=True,
                        help="Use LoRA fine-tuning (for clip_heatmap_model)")
@@ -330,7 +330,7 @@ Examples:
             workspace_size=config.get('workspace_size', 1 << 30),
             benchmark=config.get('benchmark', False),
             use_enhanced_yolo=config.get('use_enhanced_yolo', True),
-            model_name=config.get('model_name', 'facebook/metaclip-b16-fullcc2.5b'),
+            model_name=config.get('model_name', 'facebook/metaclip-2-worldwide-l14'),
             use_lora=config.get('use_lora', True),
             model_variant=config.get('model_variant', 'EfficientKeypointNet')
         )

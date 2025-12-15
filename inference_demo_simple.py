@@ -36,17 +36,17 @@ class SimpleKeypointInference:
         if model_type == 'bedsheet':
             self.model_path = 'models/meta_clip_style_bedsheet_post_original'
             self.model_config = {
-                'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
+                'lora_r': 16, 'lora_alpha': 32, 'image_size': 560, 'use_text_prior': True
             }
         elif model_type == 'mattress':  # mattress
             self.model_path = 'models/meta_clip_style_mattress_post_original'
             self.model_config = {
-                'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
+                'lora_r': 16, 'lora_alpha': 32, 'image_size': 560, 'use_text_prior': True
             }
         elif model_type == 'fitted_sheet_inverse':  # fitted_sheet
             self.model_path = 'models/meta_clip_style_fitted_sheet_inverse_post_original'
             self.model_config = {
-                'lora_r': 16, 'lora_alpha': 32, 'image_size': 256, 'use_text_prior': True
+                'lora_r': 16, 'lora_alpha': 32, 'image_size': 560, 'use_text_prior': True
             }
         
         self.model = None
@@ -59,7 +59,7 @@ class SimpleKeypointInference:
         
         # Create model with same config as training
         self.model = ClipHeatmapModel(
-            model_name='facebook/metaclip-b16-fullcc2.5b',
+            model_name='facebook/metaclip-2-worldwide-l14',
             image_size=self.model_config['image_size'],
             use_lora=True,
             lora_r=self.model_config['lora_r'],
