@@ -79,7 +79,7 @@ class SimpleKeypointInference:
         print(f"✅ Loaded {self.model_type} model successfully")
         
         # Load YOLO model for segmentation (same as training)
-        yolo_path = 'models/yolo_finetuned/sheet_without_plastic.v11i.yolov11/runs/segment/train/weights/best.pt'
+        yolo_path = 'models/yolo_finetuned/sheet_without_plastic.v13i.yolov11/runs/segment/train/weights/best.pt'
         if os.path.exists(yolo_path):
             self.yolo_model = YOLO(yolo_path)
             print(f"✅ Loaded YOLO model from {yolo_path}")
