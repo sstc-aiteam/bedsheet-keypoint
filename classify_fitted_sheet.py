@@ -20,6 +20,15 @@ DEFAULT_YOLO_WEIGHTS = "models/yolo_finetuned/sheet_without_plastic.v11i.yolov11
 
 
 def _read_image_rgb(path: str) -> np.ndarray:
+    if path.lower().endswith(".heic"):
+        try:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+            with Image.open(path) as img:
+                return np.array(img.convert("RGB"))
+        except ImportError:
+            raise ImportError("pillow-heif is required to read HEIC images. Install with: pip install pillow-heif")
+
     img_bgr = cv2.imread(path)
     if img_bgr is None:
         raise FileNotFoundError(f"Failed to read image: {path}")
@@ -27,7 +36,7 @@ def _read_image_rgb(path: str) -> np.ndarray:
 
 
 def _iter_images(folder: str) -> List[str]:
-    exts = (".jpg", ".jpeg", ".png", ".bmp")
+    exts = (".jpg", ".jpeg", ".png", ".bmp", ".heic")
     return [os.path.join(folder, f) for f in sorted(os.listdir(folder)) if f.lower().endswith(exts)]
 
 
@@ -160,6 +169,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
