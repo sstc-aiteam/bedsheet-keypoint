@@ -18,7 +18,7 @@ from src.models.fitted_sheet_cnn_classifier import FittedSheetCNNClassifier
 from src.utils.yolo_segmenter import YoloFittedSheetSegmenter
 
 
-DEFAULT_YOLO_WEIGHTS = "models/yolo_finetuned/sheet_without_plastic.v11i.yolov11/runs/segment/train/weights/best.pt"
+DEFAULT_YOLO_WEIGHTS = "models/yolo_finetuned/sheet_without_plastic.v13i.yolov11/runs/segment/train/weights/best.pt"
 
 
 @dataclass(frozen=True)
