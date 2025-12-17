@@ -278,5 +278,8 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Inference results
+inference_results/
+
 # cursor
 .cursor
