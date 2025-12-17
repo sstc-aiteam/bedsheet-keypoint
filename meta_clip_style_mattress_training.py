@@ -53,7 +53,7 @@ except ImportError:
 # Default configuration for post-training
 DEFAULT_CONFIG = {
     # Model configuration
-    "model_name": "facebook/metaclip-2-worldwide-l14",  # MetaCLIP2 L/14 (patch14 => use image_size=560)
+    "model_name": "facebook/metaclip-b16-fullcc2.5b",  # MetaCLIP2 L/14 (patch14 => use image_size=560)
     "use_original_metaclip": False,  # Set to True to use original Meta CLIP instead of pre-trained
     "ensure_equal_params": True,  # Ensure both models have identical trainable parameters
     "output_dir": "models/meta_clip_style_mattress_post",

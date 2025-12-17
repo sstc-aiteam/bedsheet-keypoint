@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from typing import List, Tuple, Optional
 import argparse
+import time
 
 # Import model and utilities
 from src.models.clip_heatmap_model import ClipHeatmapModel
@@ -52,6 +53,11 @@ class SimpleKeypointInference:
         self.model = None
         self.yolo_model = None
         self._load_models()
+
+    def _sync_cuda(self) -> None:
+        """Synchronize CUDA for accurate timing (no-op on CPU)."""
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
     
     def _load_models(self):
         """Load the trained model and YOLO model."""
@@ -59,7 +65,7 @@ class SimpleKeypointInference:
         
         # Create model with same config as training
         self.model = ClipHeatmapModel(
-            model_name='facebook/metaclip-2-worldwide-l14',
+            model_name='facebook/metaclip-b16-fullcc2.5b',
             image_size=self.model_config['image_size'],
             use_lora=True,
             lora_r=self.model_config['lora_r'],
@@ -79,15 +85,21 @@ class SimpleKeypointInference:
         print(f"✅ Loaded {self.model_type} model successfully")
         
         # Load YOLO model for segmentation (same as training)
-        yolo_path = 'models/yolo_finetuned/sheet_without_plastic.v13i.yolov11/runs/segment/train/weights/best.pt'
-        if os.path.exists(yolo_path):
+        yolo_candidates = [
+            # Preferred (matches training scripts)
+            "models/yolo_finetuned/sheet_without_plastic.v11i.yolov11/runs/segment/train/weights/best.pt",
+            # Backward/alternate path (if older run exists)
+            "models/yolo_finetuned/sheet_without_plastic.v13i.yolov11/runs/segment/train/weights/best.pt",
+        ]
+        yolo_path = next((p for p in yolo_candidates if os.path.exists(p)), None)
+        if yolo_path is not None:
             self.yolo_model = YOLO(yolo_path)
             print(f"✅ Loaded YOLO model from {yolo_path}")
         else:
-            print(f"⚠️  YOLO model not found at {yolo_path}, proceeding without segmentation")
+            print(f"⚠️  YOLO model not found (tried: {yolo_candidates}), proceeding without segmentation")
             self.yolo_model = None
     
-    def preprocess_image(self, image_path: str) -> Tuple[torch.Tensor, Tuple[int, int]]:
+    def preprocess_image(self, image_path: str) -> Tuple[torch.Tensor, Tuple[int, int], Optional[float]]:
         """
         Preprocess image exactly like training script with YOLO segmentation.
         
@@ -95,10 +107,12 @@ class SimpleKeypointInference:
             image_path: Path to input image
             
         Returns:
-            Preprocessed tensor and original size (width, height)
+            Preprocessed tensor, original size (width, height), and optional YOLO latency (ms)
         """
         # Load image with cv2 (same as training)
         img_bgr = cv2.imread(image_path)
+        if img_bgr is None:
+            raise FileNotFoundError(f"Failed to read image: {image_path}")
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         original_size = (img_rgb.shape[1], img_rgb.shape[0])  # (width, height)
 
@@ -106,11 +120,19 @@ class SimpleKeypointInference:
         # Resize to model input size
         target_size = self.model_config['image_size']
         img_resized = cv2.resize(img_rgb, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+        # Default: keep everything (no segmentation)
+        mask_all = np.ones((target_size, target_size), dtype=np.uint8) * 255
+        yolo_ms: Optional[float] = None
         
         # Apply YOLO segmentation if available (same as training)
         if self.yolo_model is not None:
+            self._sync_cuda()
+            t0 = time.perf_counter()
             # Run YOLO inference on resized image
             results = self.yolo_model(img_resized)
+            self._sync_cuda()
+            yolo_ms = (time.perf_counter() - t0) * 1000.0
             if len(results) > 0 and results[0].masks is not None:
                 # Get allowed classes based on model type
                 if self.model_type == "bedsheet":
@@ -132,8 +154,6 @@ class SimpleKeypointInference:
                 
                 # Apply mask to image (set non-fitted_sheet regions to black)
                 img_resized[mask_all == 0] = 0
-        test_image = img_resized.copy()
-        test_image[mask_all == 0] = 0
         
         # No normalization applied (use raw pixel values)
         
@@ -141,7 +161,7 @@ class SimpleKeypointInference:
         image_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float() / 255.0
         image_tensor = image_tensor.unsqueeze(0)
         
-        return image_tensor.to(self.device), original_size
+        return image_tensor.to(self.device), original_size, yolo_ms
     
     def predict_keypoints(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """Predict heatmap from image tensor."""
@@ -196,25 +216,22 @@ class SimpleKeypointInference:
             List of detected keypoints as (x, y) tuples
         """
         print(f"🔍 Running inference on: {image_path}")
+
+        total_t0 = time.perf_counter()
         
         # Preprocess
-        image_tensor, original_size = self.preprocess_image(image_path)
-        print(image_tensor)
+        image_tensor, original_size, yolo_ms = self.preprocess_image(image_path)
         print(f"📐 Input shape: {image_tensor.shape}, Original size: {original_size}")
         
         # Predict
+        self._sync_cuda()
+        model_t0 = time.perf_counter()
         heatmap = self.predict_keypoints(image_tensor)
-        print(f"🔥 Heatmap shape: {heatmap.shape}")
+        self._sync_cuda()
+        model_ms = (time.perf_counter() - model_t0) * 1000.0
         
-        # # Postprocess
-        # heatmap_resized, keypoints = self.postprocess_heatmap(heatmap, original_size)
-        # print(f"🎯 Found {len(keypoints)} keypoints")
-        images = image_tensor
-            
-        # Get predictions
-        with torch.no_grad():
-            pred_heatmaps = self.model(images)
-            pred_heatmap = pred_heatmaps[0, 0].cpu().numpy()
+        post_t0 = time.perf_counter()
+        pred_heatmap = heatmap[0, 0].detach().cpu().numpy()
         
         # Extract keypoints from predicted heatmap
         pred_peaks = thresholded_locations(pred_heatmap, threshold=0.1)
@@ -229,6 +246,13 @@ class SimpleKeypointInference:
         print(f"🎯 Found {len(pred_keypoints)} keypoints")
         heatmap_resized = cv2.resize(pred_heatmap, original_size, interpolation=cv2.INTER_CUBIC)
         keypoints = pred_keypoints
+        post_ms = (time.perf_counter() - post_t0) * 1000.0
+        total_ms = (time.perf_counter() - total_t0) * 1000.0
+
+        if yolo_ms is not None:
+            print(f"⏱️  Latency (single): YOLO={yolo_ms:.1f} ms | Heatmap={model_ms:.1f} ms | Post={post_ms:.1f} ms | Total={total_ms:.1f} ms")
+        else:
+            print(f"⏱️  Latency (single): Heatmap={model_ms:.1f} ms | Post={post_ms:.1f} ms | Total={total_ms:.1f} ms")
                
         # Visualize
         if output_path is None:

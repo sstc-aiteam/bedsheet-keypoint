@@ -143,8 +143,8 @@ def main() -> None:
                 f"{label} ({conf:.3f})",
                 anchor,
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 0, 0),
+                2,
+                (255, 255, 255),
                 2,
                 cv2.LINE_AA,
             )
