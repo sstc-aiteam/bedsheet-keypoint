@@ -355,7 +355,7 @@ def train_meta_clip_heatmap():
 
     # Meta CLIP model configuration
     config = {
-        'model_name': 'facebook/metaclip-2-worldwide-l14',  # MetaCLIP2 L/14 (patch14 => use image_size=560)
+        'model_name': 'facebook/metaclip-b16-fullcc2.5b',  # MetaCLIP2 L/14 (patch14 => use image_size=560)
         'data_dir': 'cloth_data_gen/bedsheet_dataset_3000',
         'output_dir': 'models/meta_clip_style_cloth',
         'image_size': 560,
