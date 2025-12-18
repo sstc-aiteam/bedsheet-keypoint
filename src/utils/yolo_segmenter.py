@@ -57,7 +57,7 @@ class YoloFittedSheetSegmenter:
         self.conf = float(conf)
         self.imgsz = int(imgsz)
 
-    def segment_largest(self, image_rgb: np.ndarray) -> Optional[SegmentationResult]:
+    def segment_largest(self, image_rgb: np.ndarray, *, device: Optional[str] = None) -> Optional[SegmentationResult]:
         """
         Segment the largest allowed-class instance and return its mask and bbox.
         Returns None if no instance found.
@@ -66,7 +66,16 @@ class YoloFittedSheetSegmenter:
             raise ValueError(f"Expected image_rgb HxWx3, got {image_rgb.shape}")
         img_h, img_w = image_rgb.shape[:2]
 
-        results = self.yolo(image_rgb, conf=self.conf, imgsz=self.imgsz, verbose=False)
+        # IMPORTANT:
+        # If this is called inside a DataLoader worker (forked subprocess) and Ultralytics tries to
+        # select a CUDA device, it can crash with:
+        # "Cannot re-initialize CUDA in forked subprocess".
+        # Callers may force device="cpu" in workers; in the main process you can omit `device`
+        # to allow normal CUDA selection.
+        if device is None:
+            results = self.yolo(image_rgb, conf=self.conf, imgsz=self.imgsz, verbose=False)
+        else:
+            results = self.yolo(image_rgb, conf=self.conf, imgsz=self.imgsz, verbose=False, device=str(device))
         if not results:
             return None
         r0 = results[0]

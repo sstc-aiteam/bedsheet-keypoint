@@ -203,7 +203,7 @@ def quad_iou(candidate: np.ndarray, subject_polygon: np.ndarray, subject_area: f
     
     if inter_area <= 0:
         return -1.0, None
-    
+
     # Return intersection area instead of IoU
     return inter_area, candidate
 

@@ -15,7 +15,7 @@ Lightweight pipelines for detecting corner keypoints on bedsheets, mattresses, a
 - `src/` models & utils (`clip_heatmap_model.py`, `keypoint_metrics.py`, augmentation, TensorRT helpers).
 - `shared/` common helpers (thresholding, VIA I/O, resize).
 - `meta_clip_style_*_training.py` scene‑specific training pipelines.
-- `train_fitted_sheet_classifier.py` / `classify_fitted_sheet.py` YOLO 分割後的床包三分類（CNN）訓練與推論。
+- `train_fitted_sheet_metaclip_classifier.py` / `eval_fitted_sheet_metaclip_classifier.py` YOLO 分割後的床包三分類（MetaCLIP + LoRA）訓練與評估。
 - `inference_demo_simple.py` minimal inference/visualization runner.
 - `cloth_data_gen/` synthetic data pipeline (Warp, Blender).
 - `scripts/` tools (annotators, segmentation tests).
@@ -57,42 +57,40 @@ python inference_demo_simple.py --model bedsheet --folder path/to/dir
 Options:
 - Outputs saved under `inference_results/<model_type>/`.
 
-## 床包三分類（YOLO 分割 -> CNN 分類）
-此流程會先用「原本的 YOLO segmentation 模型」擷取床包（`class=1`），再將分割後的遮罩區域裁切成方形輸入 CNN，分類成三種床包類別：
+## 床包三分類（YOLO mask -> MetaCLIP + LoRA）
+此流程會先用「原本的 YOLO segmentation 模型」擷取床包（`class=1`），再把 **mask 後的床包影像**輸入 MetaCLIP 的 vision encoder，並用 **LoRA（rank=16）+ 小型分類 head** 做三分類：
 - Class 0：`image_data/床包圖片`
 - Class 1：`image_data/床包圖片2`
 - Class 2：`image_data/床包圖片3`
 
 ### 訓練
 ```bash
-python -u train_fitted_sheet_classifier.py \
+python -u train_fitted_sheet_metaclip_classifier.py \
   --class0_dir image_data/床包圖片 \
   --class1_dir image_data/床包圖片2 \
   --class2_dir image_data/床包圖片3 \
-  --cache_dir processed_data/fitted_sheet_cls_cache \
-  --out_dir inference_results/fitted_sheet_cls_train
+  --cache_dir processed_data/fitted_sheet_metaclip_cache \
+  --out_dir models/fitted_sheet_metaclip_cls
 ```
-- **cache**：建議開啟 `--cache_dir`，會把 YOLO 分割後的 crop 存成 PNG，之後訓練 epoch 不需要重跑 YOLO（速度更快，也更適合開 `--num_workers 2~8`）。
-- **num_workers**：如果沒有 cache（每次都要跑 YOLO），建議 `--num_workers 0` 避免多進程重複載入 YOLO 造成效能/記憶體問題。
+- **預設模型**：`--model_name facebook/metaclip-b16-fullcc2.5b`（可自行改成其他 MetaCLIP/MetaCLIP2 checkpoint）
+- **LoRA**：預設 **啟用**（rank=16），可用 `--no_use_lora` 關閉
+- **freeze vision**：預設 **啟用**（只訓練 LoRA + head），要全量微調 vision 用 `--no_freeze_vision`
+- **image size**：預設 `--crop_size 256`（模型內部會自動調整成符合 patch size 的尺寸，避免 shape mismatch）
+- **cache**：建議開啟 `--cache_dir`，會把「resize + mask」後的影像存成 PNG，之後訓練 epoch 不需要重跑 YOLO。
+- **num_workers / CUDA**：Linux 下若 DataLoader worker 內嘗試用 CUDA 跑 YOLO 會爆（fork issue）。本 pipeline 會在 worker 內強制 YOLO 用 CPU 來避免 crash；如果要最快：
+  - 先跑一次 `--num_workers 0` 讓 cache 填滿
+  - 再用 `--num_workers 2~8` 讀 cache 訓練
 
 訓練輸出：
 - `best.pth` / `last.pth`
-- `labels.json`（類別名稱）
 - `train_config.json`
 
-### 推論（單張/資料夾）
+### 評估（accuracy / confusion matrix / per-class metrics）
 ```bash
-python -u classify_fitted_sheet.py \
-  --image image_data/fitted_sheet1/IMG_2066.jpg \
-  --checkpoint inference_results/fitted_sheet_cls_train/best.pth \
-  --labels_json inference_results/fitted_sheet_cls_train/labels.json \
-  --output_dir inference_results/fitted_sheet_cls_infer \
-  --save_crop --save_vis \
-  --output_json inference_results/fitted_sheet_cls_infer/results.json
+python -u eval_fitted_sheet_metaclip_classifier.py \
+  --checkpoint models/fitted_sheet_metaclip_cls/best.pth \
+  --class2_dir image_data/床包圖片3
 ```
-- `--folder <dir>` 可改成資料夾推論
-- `--save_crop` 會輸出分割後 crop 圖
-- `--save_vis` 會輸出 bbox + 預測 label/conf 的視覺化圖
 
 ## Training (scene examples)
 ```bash
@@ -132,6 +130,7 @@ python tensorrt_demo.py --pytorch_model models/meta_clip_style_bedsheet_post_pre
 - YOLO masks 會被對齊/縮放到相同尺寸後再套用，避免 mask 與原圖解析度不一致造成 indexing 錯誤。
 - Thresholding for peaks: `thresholded_locations` with 0.3, peaks merged within 10 px.
 - Inference demo draws predictions (cyan X) and optional GT (green circles).
+- `models/` 目錄在本 repo 預設 **gitignored**，訓練 checkpoint 放這裡是正常的（避免把大檔提交到 git）。
 
 ## License
 Add your license here.***
