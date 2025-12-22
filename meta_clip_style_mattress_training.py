@@ -71,7 +71,7 @@ DEFAULT_CONFIG = {
     "image_size": 560,
     
     # Training configuration
-    "batch_size": 2,
+    "batch_size": 1,
     "num_epochs": 20,
     "learning_rate": 3e-4,  # Match original training LR for fair comparison
     "weight_decay": 1e-4,

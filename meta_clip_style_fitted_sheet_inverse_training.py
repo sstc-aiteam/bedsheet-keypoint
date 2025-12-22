@@ -69,7 +69,7 @@ DEFAULT_CONFIG = {
     "image_size": 560,
     
     # Training configuration
-    "batch_size": 2,
+    "batch_size": 1,
     "num_epochs": 20,
     "learning_rate": 3e-4,  # Match original training LR for fair comparison
     "weight_decay": 1e-4,
@@ -333,7 +333,7 @@ def load_pretrained_meta_clip_model(config):
             use_text_prior=config['use_text_prior'],
             prior_prompts=config['prior_prompts'],
             negative_prompts=config['negative_prompts'],
-            prior_weight=config['prior_weight']
+            prior_weight=config['prior_weight'],
         )
         
         # Count trainable parameters

@@ -35,6 +35,13 @@ except ImportError:
     PEFT_AVAILABLE = False
     print("Warning: peft not available. Install with: pip install peft")
 
+# Native GCNN blocks (based on docs/20251219_daily_report.md + steerable_cnn_* docs)
+try:
+    from .blocks import LiftingConvC4, GroupConvC4, GroupPooling, LiftingConvSO2, GroupConvSO2
+    GCNN_AVAILABLE = True
+except Exception:
+    GCNN_AVAILABLE = False
+
 
 class ClipHeatmapHead(nn.Module):
     """
@@ -45,17 +52,74 @@ class ClipHeatmapHead(nn.Module):
         out_size: Output heatmap size (e.g., 256 for 256x256 heatmap)
     """
     
-    def __init__(self, in_dim: int, out_size: int):
+    def __init__(
+        self,
+        in_dim: int,
+        out_size: int,
+        *,
+        use_gcnn: bool = False,
+        gcnn_hidden: int = 128,
+        gcnn_mode: str = "c4",
+        so2_num_angles: int = 16,
+        so2_num_gconvs: int = 2,
+    ):
         super().__init__()
         self.out_size = out_size
-        self.proj = nn.Conv2d(in_dim, 256, kernel_size=1)
-        self.block = nn.Sequential(
-            nn.Conv2d(256, 256, 3, padding=1), 
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 64, 3, padding=1), 
-            nn.ReLU(inplace=True)
-        )
-        self.out = nn.Conv2d(64, 1, kernel_size=1)
+        self.use_gcnn = bool(use_gcnn)
+
+        if self.use_gcnn:
+            if not GCNN_AVAILABLE:
+                raise ImportError(
+                    "GCNN blocks are not available. Ensure `src/models/blocks` exists and is importable."
+                )
+            self.gcnn_mode = str(gcnn_mode).lower()
+            if self.gcnn_mode not in ("c4", "so2"):
+                raise ValueError("gcnn_mode must be one of: 'c4', 'so2'")
+
+            # C4: full G->G stack then group pooling.
+            if self.gcnn_mode == "c4":
+                self.gcnn_lift = LiftingConvC4(in_channels=in_dim, out_channels=gcnn_hidden, kernel_size=3)
+                self.gcnn_g1 = GroupConvC4(in_channels=gcnn_hidden, out_channels=gcnn_hidden, kernel_size=3)
+                self.gcnn_g2 = GroupConvC4(in_channels=gcnn_hidden, out_channels=64, kernel_size=3)
+                self.gcnn_pool = GroupPooling(mode="mean")
+
+            # SO(2) (sampled): lifting only (R^2 -> R^2 x H), then pool over sampled angles.
+            # This is an approximation to arbitrary-angle rotation handling. Increase so2_num_angles for better fidelity.
+            if self.gcnn_mode == "so2":
+                self.gcnn_lift = LiftingConvSO2(
+                    in_channels=in_dim,
+                    out_channels=gcnn_hidden,
+                    kernel_size=3,
+                    num_angles=int(so2_num_angles),
+                )
+                # Several SO(2) group conv layers (G -> G), then pool back to plane.
+                L = int(so2_num_gconvs)
+                if L <= 0:
+                    raise ValueError("so2_num_gconvs must be >= 1")
+                gconvs = []
+                for li in range(L):
+                    in_c = gcnn_hidden if li == 0 else gcnn_hidden
+                    out_c = 64 if li == (L - 1) else gcnn_hidden
+                    gconvs.append(
+                        GroupConvSO2(
+                            in_channels=in_c,
+                            out_channels=out_c,
+                            kernel_size=3,
+                            num_angles=int(so2_num_angles),
+                        )
+                    )
+                self.so2_gconvs = nn.ModuleList(gconvs)
+                self.gcnn_pool = GroupPooling(mode="mean")
+            self.out = nn.Conv2d(64, 1, kernel_size=1)
+        else:
+            self.proj = nn.Conv2d(in_dim, 256, kernel_size=1)
+            self.block = nn.Sequential(
+                nn.Conv2d(256, 256, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(256, 64, 3, padding=1),
+                nn.ReLU(inplace=True)
+            )
+            self.out = nn.Conv2d(64, 1, kernel_size=1)
 
     def forward(self, feat_2d: torch.Tensor) -> torch.Tensor:
         """
@@ -68,10 +132,40 @@ class ClipHeatmapHead(nn.Module):
             Heatmap tensor (B, 1, out_size, out_size)
         """
         # feat_2d: (B, D, h, w)
-        x = self.proj(feat_2d)
-        x = F.interpolate(x, size=(self.out_size, self.out_size), mode='bilinear', align_corners=False)
-        x = self.block(x)
-        x = self.out(x)
+        if self.use_gcnn:
+            # Lift: (B, C, |H|, h, w)
+            x = self.gcnn_lift(feat_2d)
+
+            # Resize spatial dims while preserving group dim.
+            b, c, g, h, w = x.shape
+            x = x.permute(0, 2, 1, 3, 4).contiguous().view(b * g, c, h, w)
+            x = F.interpolate(x, size=(self.out_size, self.out_size), mode="bilinear", align_corners=False)
+            x = x.view(b, g, c, self.out_size, self.out_size).permute(0, 2, 1, 3, 4).contiguous()
+
+            if self.gcnn_mode == "c4":
+                # Group conv stack (G -> G)
+                x = F.relu(x)
+                x = self.gcnn_g1(x)
+                x = F.relu(x)
+                x = self.gcnn_g2(x)
+                x = F.relu(x)
+
+                # Project to invariant plane: (B, 64, H, W)
+                x = self.gcnn_pool(x)
+                x = self.out(x)
+            else:
+                # SO(2): several group conv layers, then pool over sampled angles.
+                x = F.relu(x)
+                for layer in self.so2_gconvs:
+                    x = layer(x)
+                    x = F.relu(x)
+                x = self.gcnn_pool(x)  # (B, 64, H, W)
+                x = self.out(x)
+        else:
+            x = self.proj(feat_2d)
+            x = F.interpolate(x, size=(self.out_size, self.out_size), mode='bilinear', align_corners=False)
+            x = self.block(x)
+            x = self.out(x)
         # Ensure positive for KL loss
         # return spatial_softmax(x)
         return torch.sigmoid(x)
@@ -106,7 +200,12 @@ class ClipHeatmapModel(nn.Module):
         use_text_prior: bool = True, 
         prior_prompts: Optional[List[str]] = None, 
         negative_prompts: Optional[List[str]] = None,
-        prior_weight: float = 0.5
+        prior_weight: float = 0.5,
+        head_use_gcnn: bool = False,
+        head_gcnn_hidden: int = 128,
+        head_gcnn_mode: str = "c4",
+        head_so2_num_angles: int = 16,
+        head_so2_num_gconvs: int = 2,
     ):
         super().__init__()
         
@@ -129,7 +228,15 @@ class ClipHeatmapModel(nn.Module):
         self.hidden_size = self.vision.config.hidden_size
         self.patch_size = self.vision.config.patch_size
         self.image_size = image_size
-        self.head = ClipHeatmapHead(self.hidden_size, image_size)
+        self.head = ClipHeatmapHead(
+            self.hidden_size,
+            image_size,
+            use_gcnn=head_use_gcnn,
+            gcnn_hidden=head_gcnn_hidden,
+            gcnn_mode=head_gcnn_mode,
+            so2_num_angles=head_so2_num_angles,
+            so2_num_gconvs=head_so2_num_gconvs,
+        )
         self.use_lora = use_lora and PEFT_AVAILABLE
         self.use_text_prior = use_text_prior
         self.prior_weight = float(prior_weight)
@@ -351,7 +458,12 @@ def create_clip_heatmap_model(
     use_text_prior: bool = True,
     prior_prompts: Optional[List[str]] = None,
     negative_prompts: Optional[List[str]] = None,
-    prior_weight: float = 0.5
+    prior_weight: float = 0.5,
+    head_use_gcnn: bool = True,
+    head_gcnn_hidden: int = 32,
+    head_gcnn_mode: str = "so2",
+    head_so2_num_angles: int = 8,
+    head_so2_num_gconvs: int = 2,
 ) -> ClipHeatmapModel:
     """
     Factory function to create a CLIP heatmap model.
@@ -380,5 +492,10 @@ def create_clip_heatmap_model(
         use_text_prior=use_text_prior,
         prior_prompts=prior_prompts,
         negative_prompts=negative_prompts,
-        prior_weight=prior_weight
+        prior_weight=prior_weight,
+        head_use_gcnn=head_use_gcnn,
+        head_gcnn_hidden=head_gcnn_hidden,
+        head_gcnn_mode=head_gcnn_mode,
+        head_so2_num_angles=head_so2_num_angles,
+        head_so2_num_gconvs=head_so2_num_gconvs,
     )

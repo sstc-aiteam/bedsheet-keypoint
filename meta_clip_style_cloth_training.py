@@ -360,7 +360,7 @@ def train_meta_clip_heatmap():
         'output_dir': 'models/meta_clip_style_cloth',
         'image_size': 560,
         'auto_image_size': True,
-        'batch_size': 2,
+        'batch_size': 1,
         'num_epochs': 20,  # Increased epochs for larger dataset
         'learning_rate': 3e-4,
         'weight_decay': 1e-4,

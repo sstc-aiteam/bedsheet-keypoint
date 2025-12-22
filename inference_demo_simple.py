@@ -15,7 +15,7 @@ import argparse
 import time
 
 # Import model and utilities
-from src.models.clip_heatmap_model import ClipHeatmapModel
+from src.models.clip_heatmap_model import ClipHeatmapModel, create_clip_heatmap_model
 from shared.functions import thresholded_locations, combine_nearby_peaks
 from ultralytics import YOLO
 
@@ -34,20 +34,33 @@ class SimpleKeypointInference:
         self.model_type = model_type
         
         # Model configurations
-        if model_type == 'bedsheet':
-            self.model_path = 'models/meta_clip_style_bedsheet_post_original'
-            self.model_config = {
-                'lora_r': 16, 'lora_alpha': 32, 'image_size': 560, 'use_text_prior': True
-            }
-        elif model_type == 'mattress':  # mattress
+        if model_type == 'mattress':  # mattress
             self.model_path = 'models/meta_clip_style_mattress_post_original'
             self.model_config = {
-                'lora_r': 16, 'lora_alpha': 32, 'image_size': 560, 'use_text_prior': True
+                'lora_r': 16, 'lora_alpha': 32, 'image_size': 560, 'use_text_prior': True, "prior_prompts": 
+                [
+                    "a photo of a mattress corner",
+                    "mattress corner point",
+                    "sharp mattress corner"
+                ],
+                "negative_prompts": [
+                    "smooth bedsheet surface",
+                    "flat textile area",
+                ],
+                "prior_weight": 0.5
             }
         elif model_type == 'fitted_sheet_inverse':  # fitted_sheet
             self.model_path = 'models/meta_clip_style_fitted_sheet_inverse_post_original'
             self.model_config = {
-                'lora_r': 16, 'lora_alpha': 32, 'image_size': 560, 'use_text_prior': True
+                'lora_r': 16, 'lora_alpha': 32, 'image_size': 560, 'use_text_prior': True, "prior_prompts": 
+                [
+                    "an orange dot on the fitted sheet"
+                ],
+                "negative_prompts": [
+                    "smooth bedsheet surface",
+                    "flat textile area",
+                ],
+                "prior_weight": 0.5
             }
         
         self.model = None
@@ -64,13 +77,16 @@ class SimpleKeypointInference:
         print(f"Loading {self.model_type} model from {self.model_path}")
         
         # Create model with same config as training
-        self.model = ClipHeatmapModel(
+        self.model = create_clip_heatmap_model(
             model_name='facebook/metaclip-b16-fullcc2.5b',
             image_size=self.model_config['image_size'],
             use_lora=True,
             lora_r=self.model_config['lora_r'],
             lora_alpha=self.model_config['lora_alpha'],
-            use_text_prior=self.model_config['use_text_prior']
+            use_text_prior=self.model_config['use_text_prior'],
+            prior_prompts=self.model_config['prior_prompts'],
+            negative_prompts=self.model_config['negative_prompts'],
+            prior_weight=self.model_config['prior_weight']
         )
         
         # Load complete model weights
