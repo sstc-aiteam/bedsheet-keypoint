@@ -121,6 +121,14 @@ DEFAULT_CONFIG = {
     "seed": 42
 }
 
+head_decoder = {
+  "kind": "gcnn",
+  "mode": "so2",
+  "hidden": 32,
+  "so2_num_angles": 8,
+  "so2_num_gconvs": 2,
+}
+
 def set_random_seeds(seed: int = 42):
     """Set random seeds for reproducibility."""
     random.seed(seed)
@@ -337,7 +345,8 @@ def load_pretrained_meta_clip_model(config):
             use_text_prior=config['use_text_prior'],
             prior_prompts=config['prior_prompts'],
             negative_prompts=config['negative_prompts'],
-            prior_weight=config['prior_weight']
+            prior_weight=config['prior_weight'],
+            head_decoder=head_decoder
         )
         
         # Count trainable parameters
@@ -367,7 +376,8 @@ def load_pretrained_meta_clip_model(config):
                 use_text_prior=config['use_text_prior'],
                 prior_prompts=config['prior_prompts'],
                 negative_prompts=config['negative_prompts'],
-                prior_weight=config['prior_weight']
+                prior_weight=config['prior_weight'],
+                head_decoder=head_decoder
             )
             
             target_trainable = sum(p.numel() for p in original_model.parameters() if p.requires_grad)
@@ -388,7 +398,8 @@ def load_pretrained_meta_clip_model(config):
             use_text_prior=config['use_text_prior'],
             prior_prompts=config['prior_prompts'],
             negative_prompts=config['negative_prompts'],
-            prior_weight=config['prior_weight']
+            prior_weight=config['prior_weight'],
+            head_decoder=head_decoder
         )
         
         # Load pre-trained weights

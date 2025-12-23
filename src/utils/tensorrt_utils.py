@@ -147,7 +147,13 @@ class ClipHeatmapModelLoader(ModelLoader):
             use_text_prior=config.extra_kwargs.get('use_text_prior', True),
             prior_prompts=config.extra_kwargs.get('prior_prompts', None),
             negative_prompts=config.extra_kwargs.get('negative_prompts', None),
-            prior_weight=config.extra_kwargs.get('prior_weight', 0.5)
+            prior_weight=config.extra_kwargs.get('prior_weight', 0.5),
+            # Unified decoder spec (supported):
+            # - examples:
+            #   {"kind":"gcnn","mode":"so2","hidden":32,"so2_num_angles":8,"so2_num_gconvs":2}
+            #   {"kind":"gcnn","mode":"c4","hidden":64}
+            #   "standard"
+            head_decoder=config.extra_kwargs.get('head_decoder', None),
         )
         
         # Load state dict

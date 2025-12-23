@@ -9,7 +9,7 @@ It uses CLIP's vision encoder with LoRA fine-tuning and optional text prior gati
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 import os
 try:
     from ..utils.model_utils import *
@@ -42,6 +42,8 @@ try:
 except Exception:
     GCNN_AVAILABLE = False
 
+from .decoders import DecoderSpec, normalize_decoder_spec
+
 
 class ClipHeatmapHead(nn.Module):
     """
@@ -57,6 +59,8 @@ class ClipHeatmapHead(nn.Module):
         in_dim: int,
         out_size: int,
         *,
+        decoder: Optional[Union[str, Dict[str, Any]]] = None,
+        patch_size: Optional[int] = None,
         use_gcnn: bool = False,
         gcnn_hidden: int = 128,
         gcnn_mode: str = "c4",
@@ -65,53 +69,63 @@ class ClipHeatmapHead(nn.Module):
     ):
         super().__init__()
         self.out_size = out_size
-        self.use_gcnn = bool(use_gcnn)
+        self.decoder_spec: DecoderSpec = normalize_decoder_spec(
+            decoder,
+            legacy_use_gcnn=bool(use_gcnn),
+            legacy_gcnn_hidden=int(gcnn_hidden),
+            legacy_gcnn_mode=str(gcnn_mode),
+            legacy_so2_num_angles=int(so2_num_angles),
+            legacy_so2_num_gconvs=int(so2_num_gconvs),
+        )
 
-        if self.use_gcnn:
+        if self.decoder_spec.kind == "gcnn":
             if not GCNN_AVAILABLE:
                 raise ImportError(
                     "GCNN blocks are not available. Ensure `src/models/blocks` exists and is importable."
                 )
-            self.gcnn_mode = str(gcnn_mode).lower()
+            self.gcnn_mode = str(self.decoder_spec.params.get("mode", gcnn_mode)).lower()
             if self.gcnn_mode not in ("c4", "so2"):
                 raise ValueError("gcnn_mode must be one of: 'c4', 'so2'")
+            g_hidden = int(self.decoder_spec.params.get("hidden", gcnn_hidden))
 
             # C4: full G->G stack then group pooling.
             if self.gcnn_mode == "c4":
-                self.gcnn_lift = LiftingConvC4(in_channels=in_dim, out_channels=gcnn_hidden, kernel_size=3)
-                self.gcnn_g1 = GroupConvC4(in_channels=gcnn_hidden, out_channels=gcnn_hidden, kernel_size=3)
-                self.gcnn_g2 = GroupConvC4(in_channels=gcnn_hidden, out_channels=64, kernel_size=3)
+                self.gcnn_lift = LiftingConvC4(in_channels=in_dim, out_channels=g_hidden, kernel_size=3)
+                self.gcnn_g1 = GroupConvC4(in_channels=g_hidden, out_channels=g_hidden, kernel_size=3)
+                self.gcnn_g2 = GroupConvC4(in_channels=g_hidden, out_channels=64, kernel_size=3)
                 self.gcnn_pool = GroupPooling(mode="mean")
 
             # SO(2) (sampled): lifting only (R^2 -> R^2 x H), then pool over sampled angles.
             # This is an approximation to arbitrary-angle rotation handling. Increase so2_num_angles for better fidelity.
             if self.gcnn_mode == "so2":
+                so2_angles = int(self.decoder_spec.params.get("so2_num_angles", so2_num_angles))
+                so2_layers = int(self.decoder_spec.params.get("so2_num_gconvs", so2_num_gconvs))
                 self.gcnn_lift = LiftingConvSO2(
                     in_channels=in_dim,
-                    out_channels=gcnn_hidden,
+                    out_channels=g_hidden,
                     kernel_size=3,
-                    num_angles=int(so2_num_angles),
+                    num_angles=int(so2_angles),
                 )
                 # Several SO(2) group conv layers (G -> G), then pool back to plane.
-                L = int(so2_num_gconvs)
+                L = int(so2_layers)
                 if L <= 0:
                     raise ValueError("so2_num_gconvs must be >= 1")
                 gconvs = []
                 for li in range(L):
-                    in_c = gcnn_hidden if li == 0 else gcnn_hidden
-                    out_c = 64 if li == (L - 1) else gcnn_hidden
+                    in_c = g_hidden if li == 0 else g_hidden
+                    out_c = 64 if li == (L - 1) else g_hidden
                     gconvs.append(
                         GroupConvSO2(
                             in_channels=in_c,
                             out_channels=out_c,
                             kernel_size=3,
-                            num_angles=int(so2_num_angles),
+                            num_angles=int(so2_angles),
                         )
                     )
                 self.so2_gconvs = nn.ModuleList(gconvs)
                 self.gcnn_pool = GroupPooling(mode="mean")
             self.out = nn.Conv2d(64, 1, kernel_size=1)
-        else:
+        elif self.decoder_spec.kind == "standard":
             self.proj = nn.Conv2d(in_dim, 256, kernel_size=1)
             self.block = nn.Sequential(
                 nn.Conv2d(256, 256, 3, padding=1),
@@ -120,6 +134,11 @@ class ClipHeatmapHead(nn.Module):
                 nn.ReLU(inplace=True)
             )
             self.out = nn.Conv2d(64, 1, kernel_size=1)
+        else:
+            raise ValueError(
+                f"Unsupported decoder kind '{self.decoder_spec.kind}'. "
+                "This repo currently supports decoder kinds: 'standard', 'gcnn'."
+            )
 
     def forward(self, feat_2d: torch.Tensor) -> torch.Tensor:
         """
@@ -132,7 +151,7 @@ class ClipHeatmapHead(nn.Module):
             Heatmap tensor (B, 1, out_size, out_size)
         """
         # feat_2d: (B, D, h, w)
-        if self.use_gcnn:
+        if self.decoder_spec.kind == "gcnn":
             # Lift: (B, C, |H|, h, w)
             x = self.gcnn_lift(feat_2d)
 
@@ -161,11 +180,16 @@ class ClipHeatmapHead(nn.Module):
                     x = F.relu(x)
                 x = self.gcnn_pool(x)  # (B, 64, H, W)
                 x = self.out(x)
-        else:
+        elif self.decoder_spec.kind == "standard":
             x = self.proj(feat_2d)
             x = F.interpolate(x, size=(self.out_size, self.out_size), mode='bilinear', align_corners=False)
             x = self.block(x)
             x = self.out(x)
+        else:
+            raise ValueError(
+                f"Unsupported decoder kind '{self.decoder_spec.kind}'. "
+                "This repo currently supports decoder kinds: 'standard', 'gcnn'."
+            )
         # Ensure positive for KL loss
         # return spatial_softmax(x)
         return torch.sigmoid(x)
@@ -201,6 +225,7 @@ class ClipHeatmapModel(nn.Module):
         prior_prompts: Optional[List[str]] = None, 
         negative_prompts: Optional[List[str]] = None,
         prior_weight: float = 0.5,
+        head_decoder: Optional[Union[str, Dict[str, Any]]] = None,
         head_use_gcnn: bool = False,
         head_gcnn_hidden: int = 128,
         head_gcnn_mode: str = "c4",
@@ -231,6 +256,7 @@ class ClipHeatmapModel(nn.Module):
         self.head = ClipHeatmapHead(
             self.hidden_size,
             image_size,
+            decoder=head_decoder,
             use_gcnn=head_use_gcnn,
             gcnn_hidden=head_gcnn_hidden,
             gcnn_mode=head_gcnn_mode,
@@ -459,6 +485,7 @@ def create_clip_heatmap_model(
     prior_prompts: Optional[List[str]] = None,
     negative_prompts: Optional[List[str]] = None,
     prior_weight: float = 0.5,
+    head_decoder: Optional[Union[str, Dict[str, Any]]] = None,
     head_use_gcnn: bool = True,
     head_gcnn_hidden: int = 32,
     head_gcnn_mode: str = "so2",
@@ -493,6 +520,7 @@ def create_clip_heatmap_model(
         prior_prompts=prior_prompts,
         negative_prompts=negative_prompts,
         prior_weight=prior_weight,
+        head_decoder=head_decoder,
         head_use_gcnn=head_use_gcnn,
         head_gcnn_hidden=head_gcnn_hidden,
         head_gcnn_mode=head_gcnn_mode,

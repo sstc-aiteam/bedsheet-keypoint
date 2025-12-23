@@ -63,7 +63,6 @@ except Exception as e:
 # Project utils
 from src.utils.model_utils import kl_heatmap_loss, batch_gaussian_blur, normalize_heatmaps
 
-
 def set_seed(seed: int = 42):
     import random
     random.seed(seed)
@@ -452,6 +451,14 @@ def train_meta_clip_heatmap():
     val_loader = DataLoader(val_subset, batch_size=config['batch_size'], shuffle=False, num_workers=0, collate_fn=collate_meta_clip_batch)
     test_loader = DataLoader(test_subset, batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_meta_clip_batch)
 
+    head_decoder = {
+        "kind": "gcnn",
+        "mode": "so2",
+        "hidden": 32,
+        "so2_num_angles": 8,
+        "so2_num_gconvs": 2,
+    }
+
     # Model - using Meta CLIP
     model = create_clip_heatmap_model(
         model_name=config['model_name'],
@@ -463,7 +470,8 @@ def train_meta_clip_heatmap():
         use_text_prior=config['use_text_prior'],
         prior_prompts=config['prior_prompts'],
         negative_prompts=config['negative_prompts'],
-        prior_weight=config['prior_weight']
+        prior_weight=config['prior_weight'],
+        head_decoder=head_decoder
     ).to(device)
 
     # Optim
