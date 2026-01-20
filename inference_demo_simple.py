@@ -18,17 +18,24 @@ import time
 from src.models.clip_heatmap_model import ClipHeatmapModel, create_clip_heatmap_model
 from shared.functions import thresholded_locations, combine_nearby_peaks
 from ultralytics import YOLO
+try:
+    from src.utils.tensorrt_utils import GeneralizedTensorRTInference
+except ImportError:
+    GeneralizedTensorRTInference = None
 
 
 class SimpleKeypointInference:
     """Simplified keypoint inference that matches training evaluation exactly."""
     
-    def __init__(self, model_type: str = 'bedsheet'):
+    def __init__(self, model_type: str = 'bedsheet', model_path: Optional[str] = None):
         """
         Initialize inference demo.
         
         Args:
-            model_type: 'bedsheet' or 'mattress' or 'fitted_sheet'
+            model_type: 'bedsheet' or 'mattress' or 'fitted_sheet' (used for config defaults)
+        Args:
+            model_type: 'bedsheet' or 'mattress' or 'fitted_sheet' (used for config defaults)
+            model_path: Optional explicit path to model file (.pth, .onnx, .trt, .engine)
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model_type = model_type
@@ -63,8 +70,22 @@ class SimpleKeypointInference:
                 "prior_weight": 0.5
             }
         
+        # Override model path if provided
+        if model_path:
+            self.model_path = model_path
+        
+        self.session = None  # For ONNX runtime
+        self.trt_model = None # For TensorRT
         self.model = None
         self.yolo_model = None
+        
+        # Ensure model_config is set even if we override path, using defaults from type
+        if not hasattr(self, 'model_config'):
+             # Default fallback if type logic didn't trigger (though it should have)
+             self.model_config = {
+                'image_size': 256
+             }
+
         self._load_models()
 
     def _sync_cuda(self) -> None:
@@ -76,29 +97,95 @@ class SimpleKeypointInference:
         """Load the trained model and YOLO model."""
         print(f"Loading {self.model_type} model from {self.model_path}")
         
-        # Create model with same config as training
-        self.model = create_clip_heatmap_model(
-            model_name='facebook/metaclip-b16-fullcc2.5b',
-            image_size=self.model_config['image_size'],
-            use_lora=True,
-            lora_r=self.model_config['lora_r'],
-            lora_alpha=self.model_config['lora_alpha'],
-            use_text_prior=self.model_config['use_text_prior'],
-            prior_prompts=self.model_config['prior_prompts'],
-            negative_prompts=self.model_config['negative_prompts'],
-            prior_weight=self.model_config['prior_weight']
-        )
-        
-        # Load complete model weights
-        complete_model_path = os.path.join(self.model_path, 'complete_model.pth')
-        if not os.path.exists(complete_model_path):
-            raise FileNotFoundError(f"Complete model not found at: {complete_model_path}")
-        
-        checkpoint = torch.load(complete_model_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint)
-        self.model.to(self.device)
-        self.model.eval()
-        print(f"✅ Loaded {self.model_type} model successfully")
+        # Check if TensorRT
+        if self.model_path.endswith('.trt') or self.model_path.endswith('.engine'):
+            if GeneralizedTensorRTInference is None:
+                raise ImportError("TensorRT utilities not found or TensorRT not installed.")
+            
+            print(f"🚀 Loading TensorRT model from {self.model_path}")
+            self.trt_model = GeneralizedTensorRTInference(self.model_path)
+            
+            # Warn about image size mismatch
+            if hasattr(self.trt_model, 'input_shape'):
+                 # input_shape is (batch, channels, height, width)
+                 detected_size = self.trt_model.input_shape[2]
+                 if detected_size != self.model_config['image_size']:
+                     print(f"⚠️  Model accepts input size {detected_size}, but config uses {self.model_config['image_size']}. Inference may fail or require dynamic resizing.")
+                     # self.model_config['image_size'] = detected_size # User requested not to override
+            
+            # Use dummy model object for accessing config properties like image_size
+            self.model = create_clip_heatmap_model(
+                model_name='facebook/metaclip-b16-fullcc2.5b',
+                image_size=self.model_config['image_size'],
+                use_lora=False, 
+                use_text_prior=False
+            )
+            print(f"✅ Loaded TensorRT model successfully")
+
+        # Check if ONNX
+        elif self.model_path.endswith('.onnx'):
+            try:
+                import onnxruntime as ort
+            except ImportError:
+                raise ImportError("onnxruntime is required for ONNX inference. Install with: pip install onnxruntime-gpu")
+                
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if self.device.type == 'cuda' else ['CPUExecutionProvider']
+            self.session = ort.InferenceSession(self.model_path, providers=providers)
+            
+            # Warn about image size mismatch
+            try:
+                input_shape = self.session.get_inputs()[0].shape
+                # shape is usually [batch, channels, height, width]
+                # Height is at index 2
+                detected_size = input_shape[2]
+                
+                # Handle dynamic shape (string or None) - usually fixed for TRT/ONNX exports we use
+                if isinstance(detected_size, int):
+                    if detected_size != self.model_config['image_size']:
+                         print(f"⚠️  Model expects input size {detected_size}, but config uses {self.model_config['image_size']}. Inference may fail.")
+                         # self.model_config['image_size'] = detected_size # User requested not to override
+            except Exception as e:
+                print(f"Warning: Could not detect ONNX input size: {e}")
+            
+            # Use dummy model object for accessing config properties like image_size
+            # create_clip_heatmap_model is just used here to hold config values
+            self.model = create_clip_heatmap_model(
+                model_name='facebook/metaclip-b16-fullcc2.5b',
+                image_size=self.model_config['image_size'],
+                use_lora=False, # Not needed for config holder
+                use_text_prior=False # Not needed
+            )
+            print(f"✅ Loaded ONNX model successfully from {self.model_path}")
+            
+        else:
+            # PyTorch Path
+            # Create model with same config as training
+            self.model = create_clip_heatmap_model(
+                model_name='facebook/metaclip-b16-fullcc2.5b',
+                image_size=self.model_config['image_size'],
+                use_lora=True,
+                lora_r=self.model_config['lora_r'],
+                lora_alpha=self.model_config['lora_alpha'],
+                use_text_prior=self.model_config['use_text_prior'],
+                prior_prompts=self.model_config['prior_prompts'],
+                negative_prompts=self.model_config['negative_prompts'],
+                prior_weight=self.model_config['prior_weight']
+            )
+            
+            # Load complete model weights
+            if os.path.isdir(self.model_path):
+                complete_model_path = os.path.join(self.model_path, 'complete_model.pth')
+            else:
+                complete_model_path = self.model_path
+                
+            if not os.path.exists(complete_model_path):
+                raise FileNotFoundError(f"Model file not found at: {complete_model_path}")
+            
+            checkpoint = torch.load(complete_model_path, map_location=self.device)
+            self.model.load_state_dict(checkpoint)
+            self.model.to(self.device)
+            self.model.eval()
+            print(f"✅ Loaded PyTorch model successfully from {complete_model_path}")
         
         # Load YOLO model for segmentation (same as training)
         yolo_candidates = [
@@ -181,9 +268,31 @@ class SimpleKeypointInference:
     
     def predict_keypoints(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """Predict heatmap from image tensor."""
-        with torch.no_grad():
-            heatmap = self.model(image_tensor)
-        return heatmap
+        if self.session is not None:
+            # ONNX Inference
+            input_name = self.session.get_inputs()[0].name
+            # Convert to numpy
+            img_np = image_tensor.cpu().numpy()
+            
+            # Check input type expected by model
+            input_type = self.session.get_inputs()[0].type
+            if 'float' in input_type:
+                 img_np = img_np.astype(np.float32)
+            elif 'double' in input_type:
+                 img_np = img_np.astype(np.float64)
+                 
+            outputs = self.session.run(None, {input_name: img_np})
+            heatmap_np = outputs[0]
+            return torch.from_numpy(heatmap_np).to(self.device)
+        elif self.trt_model is not None:
+            # TensorRT Inference
+            heatmap_np = self.trt_model.infer(image_tensor)
+            return torch.from_numpy(heatmap_np).to(self.device)
+        else:
+            # PyTorch Inference
+            with torch.no_grad():
+                heatmap = self.model(image_tensor)
+            return heatmap
     
     def visualize_results(self, image_path: str, heatmap: np.ndarray, keypoints: List[Tuple[int, int]], 
                          output_path: Optional[str] = None) -> None:
@@ -284,7 +393,9 @@ def main():
     """Main function for command line usage."""
     parser = argparse.ArgumentParser(description='Simple Meta CLIP Keypoint Detection Inference')
     parser.add_argument('--model', choices=['bedsheet', 'mattress', 'fitted_sheet_inverse'], default='bedsheet',
-                        help='Model type to use')
+                        help='Model config/type to use (defaults for priors etc.)')
+    parser.add_argument('--model_path', type=str, help='Path to model file (.pth, .onnx, .trt). Overrides default path.')
+    
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--image', help='Path to a single input image')
     group.add_argument('--folder', help='Path to a folder of images (jpg/png/jpeg)')
@@ -294,7 +405,7 @@ def main():
     args = parser.parse_args()
     
     # Create inference demo
-    demo = SimpleKeypointInference(model_type=args.model)
+    demo = SimpleKeypointInference(model_type=args.model, model_path=args.model_path)
     
     # Gather image paths
     if args.image:

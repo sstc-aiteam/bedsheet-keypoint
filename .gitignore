@@ -267,6 +267,7 @@ resources/
 # Documentation files (keep only README.md)
 *.md
 !README.md
+!docs/*.md
 # Training artifacts
 models/*/tb/
 models/*.pth

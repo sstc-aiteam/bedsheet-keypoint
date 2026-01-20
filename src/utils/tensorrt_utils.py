@@ -9,7 +9,11 @@ a registry-based system.
 import os
 import torch
 import numpy as np
-import tensorrt as trt
+try:
+    import tensorrt as trt
+except ImportError:
+    trt = None
+    
 from typing import Optional, Tuple, Dict, Any, Union, Callable, Type
 from abc import ABC, abstractmethod
 import logging
@@ -138,7 +142,7 @@ class ClipHeatmapModelLoader(ModelLoader):
         
         # Create model
         model = create_clip_heatmap_model(
-            model_name=config.extra_kwargs.get('model_name', 'facebook/metaclip-2-worldwide-l14'),
+            model_name=config.extra_kwargs.get('model_name', 'facebook/metaclip-b16-fullcc2.5b'),
             image_size=config.input_shape[-1],
             use_lora=config.extra_kwargs.get('use_lora', True),
             lora_r=config.extra_kwargs.get('lora_r', 16),
@@ -252,6 +256,7 @@ class ModelRegistry:
 class GeneralizedTensorRTConverter:
     """Generalized TensorRT converter for multiple model types."""
     
+    
     def __init__(self, workspace_size: int = 1 << 30):
         """
         Initialize TensorRT converter.
@@ -259,37 +264,61 @@ class GeneralizedTensorRTConverter:
         Args:
             workspace_size: Maximum workspace size in bytes (default: 1GB)
         """
+        if trt is None:
+            # We allow initialization without TRT if we only want to export ONNX
+            # However, if we try to use builder methods, we will need to check again
+            pass
+            
         self.workspace_size = workspace_size
-        self.logger = trt.Logger(trt.Logger.WARNING)
-        self.builder = trt.Builder(self.logger)
-        self.config = self.builder.create_builder_config()
-        self.config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size)
         self.registry = ModelRegistry()
+        
+        # Initialize builder only if TRT is available
+        if trt is not None:
+            self.logger = trt.Logger(trt.Logger.WARNING)
+            self.builder = trt.Builder(self.logger)
+            self.config = self.builder.create_builder_config()
+            self.config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size)
+        else:
+            self.logger = None
+            self.builder = None
+            self.config = None
         
     def convert_model(
         self,
         config: ModelConfig,
-        output_path: str
+        output_path: str,
+        export_only: bool = False,
+        from_onnx: Optional[str] = None
     ) -> str:
         """
         Convert any supported model to TensorRT format.
         
         Args:
             config: Model configuration
-            output_path: Path to save TensorRT model
+            output_path: Path to save TensorRT model (or ONNX if export_only=True)
+            export_only: If True, only export to ONNX and stop
+            from_onnx: If provided, use this ONNX file instead of exporting from PyTorch
             
         Returns:
-            Path to saved TensorRT model
+            Path to saved model
         """
+        if export_only:
+             logger.info(f"Exporting {config.model_type} model to ONNX...")
+             
+             # Get model loader
+             loader = self.registry.get_loader(config.model_type)
+             
+             # Load model
+             model = loader.load_model(config)
+             
+             # Export
+             self._export_to_onnx(model, config, output_path)
+             return output_path
+
+        if trt is None:
+            raise ImportError("TensorRT is not installed. Cannot build TensorRT engine. Use export_only=True to just export ONNX.")
+
         logger.info(f"Converting {config.model_type} model to TensorRT with precision: {config.precision}")
-        
-        # Get model loader
-        loader = self.registry.get_loader(config.model_type)
-        
-        # Load model
-        model = loader.load_model(config)
-        model_info = loader.get_model_info(config)
-        logger.info(f"Model info: {model_info}")
         
         # Set precision
         if config.precision == "fp16" and self.builder.platform_has_fast_fp16:
@@ -306,13 +335,32 @@ class GeneralizedTensorRTConverter:
         max_shape = (config.max_batch_size, config.input_shape[1], config.input_shape[2], config.input_shape[3])
         profile.set_shape("input", min_shape, opt_shape, max_shape)
         self.config.add_optimization_profile(profile)
-        
+
         # Create network
         network = self.builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
         
-        # Create ONNX model first
-        onnx_path = output_path.replace('.trt', '.onnx')
-        self._export_to_onnx(model, config, onnx_path)
+        # Create ONNX model or use existing
+        if from_onnx:
+            onnx_path = from_onnx
+            logger.info(f"Using existing ONNX model: {onnx_path}")
+        else:
+            # Determine ONNX path
+            if output_path.endswith('.trt'):
+                onnx_path = output_path.replace('.trt', '.onnx')
+            else:
+                onnx_path = output_path + '.onnx'
+                
+            # Get model loader
+            loader = self.registry.get_loader(config.model_type)
+            
+            # Load model
+            model = loader.load_model(config)
+            model_info = loader.get_model_info(config)
+            logger.info(f"Model info: {model_info}")
+            
+            self._export_to_onnx(model, config, onnx_path)
+        
+        # Parse ONNX to TensorRT
         
         # Parse ONNX to TensorRT
         parser = trt.OnnxParser(network, self.logger)
@@ -333,8 +381,8 @@ class GeneralizedTensorRTConverter:
         
         logger.info(f"TensorRT model saved to: {output_path}")
         
-        # Clean up ONNX file
-        if os.path.exists(onnx_path):
+        # Clean up ONNX file ONLY if we generated it
+        if not from_onnx and os.path.exists(onnx_path):
             os.remove(onnx_path)
         
         return output_path
@@ -357,13 +405,14 @@ class GeneralizedTensorRTConverter:
             dummy_input,
             output_path,
             export_params=True,
-            opset_version=14,
+            opset_version=20,
             do_constant_folding=True,
             input_names=['input'],
             output_names=['output'],
             dynamic_axes=config.dynamic_axes
         )
         logger.info(f"ONNX model exported to: {output_path}")
+
 
 
 class GeneralizedTensorRTInference:
@@ -376,6 +425,9 @@ class GeneralizedTensorRTInference:
         Args:
             model_path: Path to TensorRT model file
         """
+        if trt is None:
+            raise ImportError("TensorRT is not installed. Cannot run inference.")
+            
         self.model_path = model_path
         self.logger = trt.Logger(trt.Logger.WARNING)
         self.runtime = trt.Runtime(self.logger)
@@ -494,6 +546,8 @@ def convert_any_model_to_tensorrt(
     input_shape: Tuple[int, int, int, int] = (1, 3, 256, 256),
     precision: str = "fp16",
     workspace_size: int = 1 << 30,
+    export_only: bool = False,
+    from_onnx: Optional[str] = None,
     **kwargs
 ) -> str:
     """
@@ -506,6 +560,8 @@ def convert_any_model_to_tensorrt(
         input_shape: Input tensor shape
         precision: Precision mode ("fp32", "fp16", "int8")
         workspace_size: Maximum workspace size in bytes
+        export_only: If True, only export to ONNX
+        from_onnx: If provided, use this ONNX file
         **kwargs: Additional model-specific parameters
         
     Returns:
@@ -521,7 +577,7 @@ def convert_any_model_to_tensorrt(
     )
     
     converter = GeneralizedTensorRTConverter(workspace_size=workspace_size)
-    return converter.convert_model(config, output_path)
+    return converter.convert_model(config, output_path, export_only=export_only, from_onnx=from_onnx)
 
 
 def benchmark_any_model(

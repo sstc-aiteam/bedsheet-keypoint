@@ -8,6 +8,49 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+from typing import Optional, Tuple
+
+
+def _manual_affine_grid(theta: torch.Tensor, size: Tuple[int, int, int, int], align_corners: bool) -> torch.Tensor:
+    """
+    Manual implementation of affine_grid to avoid ONNX/TensorRT issues with the AffineGrid operator.
+    """
+    N, C, H, W = size
+    device = theta.device
+    dtype = theta.dtype
+
+    if align_corners:
+        y_grid = torch.linspace(-1, 1, steps=H, device=device, dtype=dtype)
+        x_grid = torch.linspace(-1, 1, steps=W, device=device, dtype=dtype)
+    else:
+        # Standard unaligned grid: centers of pixels
+        y_grid = torch.linspace(-1 + 1/H, 1 - 1/H, steps=H, device=device, dtype=dtype)
+        x_grid = torch.linspace(-1 + 1/W, 1 - 1/W, steps=W, device=device, dtype=dtype)
+    
+    # Meshgrid (H, W) - indexing='ij' gives y (vertical) varies first, x (horizontal) second
+    grid_y, grid_x = torch.meshgrid(y_grid, x_grid, indexing='ij')
+    
+    # Stack to (H, W, 3) -> (x, y, 1)
+    ones = torch.ones_like(grid_x)
+    base_grid = torch.stack([grid_x, grid_y, ones], dim=-1)
+    
+    # Flatten: (H*W, 3)
+    grid_flat = base_grid.reshape(-1, 3)
+    
+    # Transpose for matrix multiplication: (3, H*W)
+    grid_flat_t = grid_flat.permute(1, 0)
+    
+    # theta is (N, 2, 3)
+    # result: (N, 2, HW) = theta @ grid_flat_t_expanded
+    grid_trans = torch.matmul(theta, grid_flat_t.unsqueeze(0))
+    
+    # Reshape to (N, H, W, 2)
+    # (N, 2, HW) -> (N, HW, 2) -> (N, H, W, 2)
+    grid_trans = grid_trans.permute(0, 2, 1).reshape(N, H, W, 2)
+    
+    return grid_trans
+
+
 def _rotate_kernels_grid_sample(
     weight: torch.Tensor,  # (C_out, C_in, K, K)
     theta: torch.Tensor,  # (A,) in radians
@@ -60,7 +103,10 @@ def _rotate_kernels_grid_sample(
     )
 
     # Create sampling grid: (A, K, K, 2)
-    grid = F.affine_grid(affine, size=(A, 1, kH, kW), align_corners=align_corners)
+    # Create sampling grid: (A, K, K, 2)
+    # Create sampling grid: (A, K, K, 2)
+    # F.affine_grid can cause issues with TensorRT ONNX parser (UNSUPPORTED_NODE), so we use manual implementation
+    grid = _manual_affine_grid(affine, size=(A, 1, kH, kW), align_corners=align_corners)
 
     # Expand kernel batch across angles: (A*N,1,K,K)
     # `expand()` can produce non-contiguous views; grid_sample on CUDA may fail with such tensors.
