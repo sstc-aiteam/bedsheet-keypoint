@@ -33,7 +33,7 @@ def parse_args():
     
     # Required arguments
     parser.add_argument("--model_type", type=str, required=True, 
-                       choices=['hybrid_keypoint_net', 'clip_heatmap_model', 'efficient_keypoint_net', 'yolo_model'],
+                       choices=['hybrid_keypoint_net', 'clip_heatmap_model', 'efficient_keypoint_net'],
                        help="Type of model to convert")
     parser.add_argument("--output_path", type=str, required=True, 
                        help="Path to save output (TensorRT engine or ONNX model)")
